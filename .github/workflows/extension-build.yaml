@@ -83,3 +83,13 @@ jobs:
 
       - name: Build extension and publish library locally
         run: ./gradlew :exoplayer-ffmpeg-extension:publishToMavenLocal
+
+      - name: Upload FFmpeg Extension AARs
+        uses: actions/upload-artifact@v4 # 建议使用最新版本
+        with:
+          name: ffmpeg-extension-aars # 上传后在 GitHub UI 中显示的名字
+          # 模块的路径是 ExoPlayer/extensions/ffmpeg/
+          # AAR 文件通常在 build/outputs/aar/ 目录下
+          # 使用通配符 * 来匹配所有 .aar 文件 (例如 -release.aar, -debug.aar)
+          path: ExoPlayer/extensions/ffmpeg/build/outputs/aar/*.aar
+          if-no-files-found: error # 如果没有找到文件则报错 (可选: warn, ignore)
