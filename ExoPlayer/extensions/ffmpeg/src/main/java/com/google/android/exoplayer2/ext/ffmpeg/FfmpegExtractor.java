@@ -25,7 +25,7 @@ public final class FfmpegExtractor implements Extractor {
   private static final String TAG = "FfmpegExtractor";
   private static final int SNIFF_BUFFER_SIZE = 16;
   private static final int PACKET_BUFFER_SIZE = 32768;
-  private static final int MAX_INPUT_LENGTH = 15 * 1024 * 1024;
+  private static final int MAX_INPUT_LENGTH = 1500 * 1024 * 1024;
   private static byte[] ASF_SIGNATURE = new byte[]{
       (byte) 0x30, (byte) 0x26, (byte) 0xB2, (byte) 0x75,
       (byte) 0x8E, (byte) 0x66, (byte) 0xCF, (byte) 0x11,
