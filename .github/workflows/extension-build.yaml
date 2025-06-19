@@ -15,18 +15,18 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+        uses: actions/checkout@v3 # v3.5.3
         with:
           submodules: recursive
       - name: Setup Java
-        uses: actions/setup-java@cd89f46ac9d01407894225f350157564c9c7cee2 # v3.12.0
+        uses: actions/setup-java@v3 # v3.12.0
         with:
           distribution: temurin
           java-version: 11
       - name: Setup Gradle
-        uses: gradle/gradle-build-action@a4cf152f482c7ca97ef56ead29bf08bcd953284c # v2.7.0
+        uses: gradle/gradle-build-action@v2 # v2.7.0
       - name: Cache NDK
-        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
+        uses: actions/cache@v3 # v3.3.1
         with:
           path: /usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}
           key: ${{ runner.os }}-${{ env.NDK_VER }}
