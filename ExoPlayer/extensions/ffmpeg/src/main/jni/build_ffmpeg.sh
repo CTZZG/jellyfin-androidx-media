@@ -30,7 +30,6 @@ COMMON_OPTIONS="
     --disable-programs
     --disable-everything
     --disable-avdevice
-    # --disable-avformat
     --enable-demuxer=dsf
     --disable-swscale
     --disable-postproc
