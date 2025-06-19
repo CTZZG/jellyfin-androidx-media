@@ -99,6 +99,7 @@ public final class MimeTypes {
   public static final String AUDIO_AMR_WB = BASE_TYPE_AUDIO + "/amr-wb";
   public static final String AUDIO_FLAC = BASE_TYPE_AUDIO + "/flac";
   public static final String AUDIO_ALAC = BASE_TYPE_AUDIO + "/alac";
+  public static final String AUDIO_DSD = BASE_TYPE_AUDIO + "/dsd";
   public static final String AUDIO_MSGSM = BASE_TYPE_AUDIO + "/gsm";
   public static final String AUDIO_OGG = BASE_TYPE_AUDIO + "/ogg";
   public static final String AUDIO_WAV = BASE_TYPE_AUDIO + "/wav";
