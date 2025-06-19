@@ -3,6 +3,7 @@
 <html lang="en">
 <head><!-- start favicons snippet, use https://realfavicongenerator.net/ --><link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png"><link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png"><link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16x16.png"><link rel="manifest" href="/assets/site.webmanifest"><link rel="mask-icon" href="/assets/safari-pinned-tab.svg" color="#fc4d50"><link rel="shortcut icon" href="/assets/favicon.ico"><meta name="msapplication-TileColor" content="#ffc40d"><meta name="msapplication-config" content="/assets/browserconfig.xml"><meta name="theme-color" content="#ffffff"><!-- end favicons snippet -->
 <title>ExoPlayer (ExoPlayer library)</title>
+<meta name="robots" content="noindex">
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <link rel="stylesheet" type="text/css" href="../../../../stylesheet.css" title="Style">
 <link rel="stylesheet" type="text/css" href="../../../../jquery/jquery-ui.css" title="Style">
@@ -183,7 +184,7 @@ extends <a href="Player.html" title="interface in com.google.android.exoplayer2"
 
  <p>The figure below shows ExoPlayer's threading model.
 
- <p style="align:center"><img src="https://exoplayer.dev/doc/reference/com/google/android/exoplayer2/doc-files/exoplayer-threading-model.svg" alt="ExoPlayer's threading model">
+ <p style="align:center"><img src="https://developer.android.com/static/images/reference/com/google/android/exoplayer2/exoplayer-threading-model.svg" alt="ExoPlayer's threading model">
 
  <ul>
    <li>ExoPlayer instances must be accessed from a single application thread unless indicated
@@ -1447,7 +1448,9 @@ void&nbsp;prepare&#8203;(<a href="source/MediaSource.html" title="interface in c
 <h4>setShuffleOrder</h4>
 <pre class="methodSignature">void&nbsp;setShuffleOrder&#8203;(<a href="source/ShuffleOrder.html" title="interface in com.google.android.exoplayer2.source">ShuffleOrder</a>&nbsp;shuffleOrder)</pre>
 <div class="deprecationBlock"><span class="deprecatedLabel">Deprecated.</span></div>
-<div class="block">Sets the shuffle order.</div>
+<div class="block">Sets the shuffle order.
+
+ <p>The <a href="source/ShuffleOrder.html" title="interface in com.google.android.exoplayer2.source"><code>ShuffleOrder</code></a> passed must have the same length as the current playlist (<a href="Player.html#getMediaItemCount()"><code>Player.getMediaItemCount()</code></a>).</div>
 <dl>
 <dt><span class="paramLabel">Parameters:</span></dt>
 <dd><code>shuffleOrder</code> - The shuffle order.</dd>

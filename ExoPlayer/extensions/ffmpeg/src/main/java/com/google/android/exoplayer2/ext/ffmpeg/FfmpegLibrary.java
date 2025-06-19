@@ -150,12 +150,14 @@ public final class FfmpegLibrary {
         return "flac";
       case MimeTypes.AUDIO_ALAC:
         return "alac";
-      case MimeTypes.AUDIO_DSD:
-        return "dsd";
       case MimeTypes.AUDIO_MLAW:
         return "pcm_mulaw";
       case MimeTypes.AUDIO_ALAW:
         return "pcm_alaw";
+      case MimeTypes.AUDIO_WMA:
+        return "wmav2";
+      case MimeTypes.AUDIO_DSD:
+        return "dsd_msbf";
       default:
         return null;
     }

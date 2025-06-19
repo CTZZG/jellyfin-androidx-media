@@ -30,13 +30,16 @@ COMMON_OPTIONS="
     --disable-programs
     --disable-everything
     --disable-avdevice
-    --enable-demuxer=dsf
+    --disable-avformat
     --disable-swscale
     --disable-postproc
     --disable-avfilter
     --disable-symver
     --disable-avresample
     --enable-swresample
+    --enable-avformat
+    --enable-demuxer=asf
+    --enable-demuxer=dsf
     --extra-ldexeflags=-pie
     "
 TOOLCHAIN_PREFIX="${NDK_PATH}/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin"

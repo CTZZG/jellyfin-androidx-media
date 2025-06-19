@@ -50,7 +50,7 @@ public final class FileTypes {
   @Target(TYPE_USE)
   @IntDef({
     UNKNOWN, AC3, AC4, ADTS, AMR, FLAC, FLV, MATROSKA, MP3, MP4, OGG, PS, TS, WAV, WEBVTT, JPEG,
-    MIDI, AVI
+    MIDI, AVI, WMA
   })
   public @interface Type {}
   /** Unknown file type. */
@@ -89,6 +89,10 @@ public final class FileTypes {
   public static final int MIDI = 15;
   /** File type for the AVI format. */
   public static final int AVI = 16;
+  /** File type for the WMA format. */
+  public static final int WMA = 17;
+  /** File type for the DSD format. */
+  public static final int DSF = 18;
 
   @VisibleForTesting /* package */ static final String HEADER_CONTENT_TYPE = "Content-Type";
 
@@ -125,6 +129,8 @@ public final class FileTypes {
   private static final String EXTENSION_JPG = ".jpg";
   private static final String EXTENSION_JPEG = ".jpeg";
   private static final String EXTENSION_AVI = ".avi";
+  private static final String EXTENSION_WMA = ".wma";
+  private static final String EXTENSION_DSF = ".dsf";
 
   private FileTypes() {}
 
@@ -190,6 +196,11 @@ public final class FileTypes {
         return FileTypes.JPEG;
       case MimeTypes.VIDEO_AVI:
         return FileTypes.AVI;
+      case MimeTypes.AUDIO_WMA:
+        return FileTypes.WMA;
+      case MimeTypes.AUDIO_DSF:
+      case MimeTypes.AUDIO_DSD:
+      return FileTypes.DSF;
       default:
         return FileTypes.UNKNOWN;
     }
@@ -257,6 +268,10 @@ public final class FileTypes {
       return FileTypes.JPEG;
     } else if (filename.endsWith(EXTENSION_AVI)) {
       return FileTypes.AVI;
+    } else if (filename.endsWith(EXTENSION_WMA)) {
+      return FileTypes.WMA;
+    } else if (filename.toLowerCase().endsWith(EXTENSION_DSF)) {
+      return FileTypes.DSF;
     } else {
       return FileTypes.UNKNOWN;
     }

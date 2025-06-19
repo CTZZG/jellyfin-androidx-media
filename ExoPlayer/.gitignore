@@ -49,6 +49,7 @@ cmake-build-debug
 dist
 jacoco.exec
 tmp
+.cxx
 
 # External native builds
 .externalNativeBuild
@@ -79,3 +80,6 @@ extensions/cronet/libs/*
 
 # MIDI extension
 extensions/midi/lib
+
+# Build outputs
+/outputs/

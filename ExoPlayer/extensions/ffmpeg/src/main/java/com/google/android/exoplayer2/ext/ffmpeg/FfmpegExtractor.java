@@ -3,364 +3,333 @@ package com.google.android.exoplayer2.ext.ffmpeg;
 import androidx.annotation.Nullable;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.ParserException;
 import com.google.android.exoplayer2.extractor.Extractor;
 import com.google.android.exoplayer2.extractor.ExtractorInput;
 import com.google.android.exoplayer2.extractor.ExtractorOutput;
-import com.google.android.exoplayer2.extractor.ExtractorsFactory;
 import com.google.android.exoplayer2.extractor.PositionHolder;
-import com.google.android.exoplayer2.extractor.SeekMap;
-import com.google.android.exoplayer2.extractor.SeekPoint; // For SeekMap.SeekPoints
 import com.google.android.exoplayer2.extractor.TrackOutput;
-import com.google.android.exoplayer2.util.Assertions;
 import com.google.android.exoplayer2.util.Log;
-import com.google.android.exoplayer2.util.MimeTypes; // Assuming AUDIO_DSD is or will be defined here
-import com.google.android.exoplayer2.util.Util;
+import com.google.android.exoplayer2.util.MimeTypes;
+import com.google.android.exoplayer2.util.ParsableByteArray;
+import java.io.EOFException;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.Collections;
-import java.util.List;
+import java.util.ArrayList;
+import java.util.Arrays;
 
 /**
- * An {@link Extractor} that uses FFmpeg to extract samples from a media stream.
- * Initially focused on DSF/DSD.
+ * Extracts data from files using FFmpeg demuxing.
  */
 public final class FfmpegExtractor implements Extractor {
 
-    public static final ExtractorsFactory FACTORY = () -> new Extractor[]{new FfmpegExtractor()};
+  private static final String TAG = "FfmpegExtractor";
+  private static final int SNIFF_BUFFER_SIZE = 16;
+  private static final int PACKET_BUFFER_SIZE = 32768;
+  private static final int MAX_INPUT_LENGTH = 15 * 1024 * 1024;
+  private static byte[] ASF_SIGNATURE = new byte[]{
+      (byte) 0x30, (byte) 0x26, (byte) 0xB2, (byte) 0x75,
+      (byte) 0x8E, (byte) 0x66, (byte) 0xCF, (byte) 0x11,
+      (byte) 0xA6, (byte) 0xD9, (byte) 0x00, (byte) 0xAA,
+      (byte) 0x00, (byte) 0x62, (byte) 0xCE, (byte) 0x6C
+  };
+  private static final byte[] DSF_SIGNATURE = new byte[]{(byte) 'D', (byte) 'S', (byte) 'D', (byte) ' '};
 
-    private static final String TAG = "FfmpegExtractor";
 
-    // DSF magic bytes: "DSD "
-    private static final int DSF_MAGIC_BYTES = 0x44534420; // 'D', 'S', 'D', ' '
+  private static final int AV_CODEC_ID_WMAV1 = 0x15000 + 7;
+  private static final int AV_CODEC_ID_WMAV2 = 0x15000 + 8;
 
-    // Define a MIME type for DSD if not already in MimeTypes.java
-    // public static final String MIMETYPE_AUDIO_DSD = "audio/dsd"; // Or "audio/x-dsd"
+  private static final int AV_CODEC_ID_DSD_LSBF = 86061;
+  private static final int AV_CODEC_ID_DSD_MSBF = 86062;
+  private static final int AV_CODEC_ID_DSD_LSBF_PLANAR = 86063;
+  private static final int AV_CODEC_ID_DSD_MSBF_PLANAR = 86064;
 
-    private long nativeContextHandle; // Pointer to native (extractor) context
 
-    private ExtractorOutput extractorOutput;
-    private TrackOutput trackOutput; // Assuming single audio track for DSF
-    private boolean tracksBuilt;
-    private @Nullable FfmpegSeekMap seekMap;
+  private long nativeContext;
+  private ExtractorOutput extractorOutput;
+  private TrackOutput trackOutput;
+  private boolean tracksInitialized;
+  private final byte[] packetBuffer;
+  private final long[] timestampBuffer;
+  private boolean endOfInput;
+  private boolean released;
 
-    private @Nullable ByteBuffer packetBuffer;
-    // Default capacity, can be adjusted. FFmpeg might suggest a size after opening.
-    private int packetBufferCapacity = 256 * 1024;
+  public FfmpegExtractor() {
+    packetBuffer = new byte[PACKET_BUFFER_SIZE];
+    timestampBuffer = new long[1];
+    tracksInitialized = false;
+    endOfInput = false;
+    nativeContext = 0;
+  }
 
-    public FfmpegExtractor() {
+  @Override
+  public boolean sniff(ExtractorInput input) throws IOException {
+    if (released) {
+      return false;
+    }
+
+    byte[] sniffHeader = new byte[SNIFF_BUFFER_SIZE];
+    try {
+      input.peekFully(sniffHeader, 0, ASF_SIGNATURE.length);
+      boolean isAsf = true;
+      for (int i = 0; i < ASF_SIGNATURE.length; i++) {
+        if (sniffHeader[i] != ASF_SIGNATURE[i]) {
+          isAsf = false;
+          break;
+        }
+      }
+      if (isAsf) {
+        return true;
+      }
+    } catch (EOFException e) {
+      // Not enough data for ASF signature
+    }
+
+    input.resetPeekPosition();
+    try {
+      input.peekFully(sniffHeader, 0, DSF_SIGNATURE.length);
+      boolean isDsf = true;
+      for (int i = 0; i < DSF_SIGNATURE.length; i++) {
+        if (sniffHeader[i] != DSF_SIGNATURE[i]) {
+          isDsf = false;
+          break;
+        }
+      }
+      if (isDsf) {
+        return true;
+      }
+    } catch (EOFException e) {
+      // Not enough data for DSF signature
+    }
+    
+    return false;
+  }
+
+  @Override
+  public void init(ExtractorOutput output) {
+    this.extractorOutput = output;
+  }
+
+  @Override
+  public @ReadResult int read(ExtractorInput input, PositionHolder seekPosition)
+      throws IOException {
+    if (released) {
+      return RESULT_END_OF_INPUT;
+    }
+    if (endOfInput) {
+      return RESULT_END_OF_INPUT;
+    }
+
+    try {
+      if (nativeContext == 0) {
         if (!FfmpegLibrary.isAvailable()) {
-            throw new IllegalStateException("FFmpeg library not available for FfmpegExtractor.");
+          throw ParserException.createForMalformedContainer(
+              "Failed to load FFmpeg native libraries.", null);
         }
+
+        long inputLengthLong = input.getLength();
+        if (inputLengthLong == C.LENGTH_UNSET) {
+            Log.e(TAG, "Input length is unknown. FfmpegExtractor requires a known length.");
+            throw new IOException("Input length unknown, FfmpegExtractor cannot proceed.");
+        }
+        if (inputLengthLong > Integer.MAX_VALUE) {
+            Log.e(TAG, "Input length exceeds Integer.MAX_VALUE, cannot read into byte array.");
+            throw new IOException("Input file too large for current FfmpegExtractor JNI design.");
+        }
+        int inputLength = (int) inputLengthLong;
+
+        if (inputLength <= 0) {
+          throw new IOException("Input length must be greater than zero.");
+        }
+        if (inputLength > MAX_INPUT_LENGTH) {
+          Log.w(TAG, "Input length " + inputLength + " exceeds configured MAX_INPUT_LENGTH " + MAX_INPUT_LENGTH + ". Attempting to proceed but may fail.");
+          // Or throw: throw new IOException("Input length exceeds maximum allowed size: " + MAX_INPUT_LENGTH);
+        }
+
+
+        byte[] inputData = new byte[inputLength];
+        input.readFully(inputData, 0, inputLength);
+        Log.d(TAG, "Read " + inputLength + " bytes from input.");
+
+        nativeContext = nativeCreateContext(inputData, inputLength);
+        if (nativeContext == 0) {
+          Log.e(TAG, "Failed to create native context");
+          throw ParserException.createForMalformedContainer("FFmpeg failed to open input",
+              null);
+        }
+      }
+
+      if (!tracksInitialized) {
+        initializeTracks();
+        tracksInitialized = true;
+        extractorOutput.endTracks();
+      }
+
+      return readSample();
+    } catch (UnsatisfiedLinkError e) {
+      Log.e(TAG, "Native method not available", e);
+      return RESULT_END_OF_INPUT;
+    }
+  }
+
+  private void initializeTracks() throws ParserException {
+    int codecId = nativeGetAudioCodecId(nativeContext);
+    int sampleRate = nativeGetSampleRate(nativeContext);
+    int channelCount = nativeGetChannelCount(nativeContext);
+    long bitRate = nativeGetBitRate(nativeContext);
+    int blockAlign = nativeGetBlockAlign(nativeContext);
+    @Nullable byte[] extraData = nativeGetExtraData(nativeContext);
+
+    String mimeType = getMimeTypeFromCodecId(codecId);
+    if (mimeType == null) {
+      Log.e(TAG, "Unsupported codec ID from FFmpeg: " + codecId);
+      throw ParserException.createForMalformedContainer("Unsupported codec ID: " + codecId, null);
     }
 
-    @Override
-    public boolean sniff(ExtractorInput input) throws IOException {
-        ParsableByteArray scratch = new ParsableByteArray(4);
-        input.peekFully(scratch.getData(), 0, 4);
-        if (scratch.readInt() == DSF_MAGIC_BYTES) {
-            Log.d(TAG, "DSF format sniffed successfully.");
-            return true;
-        }
-        return false;
-    }
-
-    @Override
-    public void init(ExtractorOutput output) {
-        this.extractorOutput = output;
-        this.nativeContextHandle = nativeCreateExtractorContext();
-        if (this.nativeContextHandle == 0) {
-            throw new IllegalStateException("Failed to create native FFmpeg extractor context.");
-        }
-        Log.d(TAG, "FfmpegExtractor initialized with native context: " + nativeContextHandle);
-    }
-
-    @Override
-    public int read(ExtractorInput input, PositionHolder seekPosition) throws IOException {
-        Assertions.checkStateNotNull(extractorOutput);
-        Assertions.checkState(nativeContextHandle != 0, "Native context is not initialized.");
-
-        if (!tracksBuilt) {
-            // The JNI layer will need to use custom I/O to read from ExtractorInput
-            int openResult = nativeOpenInput(nativeContextHandle, input);
-            if (openResult < 0) {
-                Log.e(TAG, "Failed to open media via FFmpeg (custom IO), error code: " + openResult);
-                throw new FfmpegDecoderException("FFmpeg failed to open media: " + getErrorString(openResult));
-            }
-
-            buildTracksAndSeekMap(); // This will call JNI to get stream info
-            tracksBuilt = true;
-        }
-
-        if (packetBuffer == null) {
-            // Allocate a direct ByteBuffer for JNI
-            packetBuffer = ByteBuffer.allocateDirect(packetBufferCapacity);
-        }
-        packetBuffer.clear();
-
-        FfmpegPacketInfo packetInfo = nativeReadPacket(nativeContextHandle, packetBuffer);
-
-        if (packetInfo == null) {
-            Log.e(TAG, "nativeReadPacket returned null, implies an unrecoverable error or misconfiguration.");
-            return RESULT_END_OF_INPUT;
-        }
-
-        if (packetInfo.isError) {
-            Log.e(TAG, "Error during nativeReadPacket: " + packetInfo.errorCode);
-            throw new FfmpegDecoderException("FFmpeg error during packet read: " + getErrorString(packetInfo.errorCode));
-        }
-
-        if (packetInfo.isEof) {
-            Log.d(TAG, "End of input reached by nativeReadPacket.");
-            return RESULT_END_OF_INPUT;
-        }
-
-        if (trackOutput == null || packetInfo.streamIndex != 0) { // Assuming DSF has one audio stream at index 0
-            Log.w(TAG, "Invalid stream index (" + packetInfo.streamIndex + ") or trackOutput not ready. Skipping packet.");
-            return RESULT_CONTINUE;
-        }
-
-        packetBuffer.position(0);
-        packetBuffer.limit(packetInfo.size);
-
-        trackOutput.sampleData(packetBuffer, packetInfo.size);
-        trackOutput.sampleMetadata(
-                packetInfo.ptsUs,
-                packetInfo.flags, // Map FFmpeg AV_PKT_FLAG_KEY to C.BUFFER_FLAG_KEY_FRAME
-                packetInfo.size,
-                0,
-                null);
-
-        return RESULT_CONTINUE;
-    }
-
-    @Override
-    public void seek(long position, long timeUs) {
-        Log.d(TAG, "Seek requested to position: " + position + ", timeUs: " + timeUs);
-        if (nativeContextHandle != 0 && seekMap != null && seekMap.isSeekable()) {
-            int result = nativeSeekTo(nativeContextHandle, timeUs);
-            if (result < 0) {
-                Log.w(TAG, "Native seek failed with error: " + result);
-                // Depending on the error, you might want to throw an IOException
-            }
-        }
-    }
-
-    @Override
-    public void release() {
-        Log.d(TAG, "Releasing FfmpegExtractor. Native context: " + nativeContextHandle);
-        if (nativeContextHandle != 0) {
-            nativeReleaseExtractorContext(nativeContextHandle);
-            nativeContextHandle = 0;
-        }
-        packetBuffer = null;
-        trackOutput = null;
-        tracksBuilt = false;
-        seekMap = null;
-    }
-
-    private void buildTracksAndSeekMap() throws FfmpegDecoderException {
-        // For DSF, we expect one audio stream.
-        FfmpegStreamInfo streamInfo = nativeGetStreamFormat(nativeContextHandle, 0 /* streamIndex */);
-
-        if (streamInfo == null) {
-            throw new FfmpegDecoderException("Failed to get stream format from FFmpeg for stream 0.");
-        }
-
-        Log.d(TAG, "Stream 0: Codec=" + streamInfo.codecName +
-                ", Channels=" + streamInfo.channels +
-                ", SampleRate=" + streamInfo.sampleRate);
-
-        // This extractor assumes a single track for simplicity with DSF
+    if (trackOutput == null) {
         trackOutput = extractorOutput.track(0, C.TRACK_TYPE_AUDIO);
-
-        Format.Builder formatBuilder = new Format.Builder();
-        // For DSD, the MIME type needs to be recognized by FfmpegAudioDecoder
-        // Update FfmpegLibrary.getCodecName to map this back to "dsd_lsbf_planar" or similar.
-        formatBuilder.setSampleMimeType(MimeTypes.AUDIO_DSD); // Or your custom MIMETYPE_AUDIO_DSD
-
-        formatBuilder
-                .setChannelCount(streamInfo.channels)
-                .setSampleRate(streamInfo.sampleRate);
-
-        // DSD specific: FFmpeg decoders for DSD might output PCM.
-        // The extractor should describe the *encoded* format (DSD).
-        // The FfmpegAudioDecoder will handle the actual decoding to PCM and report its output format.
-        // So, no pcmEncoding here.
-
-        if (streamInfo.extradata != null && streamInfo.extradata.length > 0) {
-            formatBuilder.setInitializationData(Collections.singletonList(streamInfo.extradata));
-        }
-        if (streamInfo.averageBitrate > 0) {
-            formatBuilder.setAverageBitrate(streamInfo.averageBitrate);
-        }
-
-        trackOutput.format(formatBuilder.build());
-
-        long durationUs = nativeGetDurationUs(nativeContextHandle);
-        boolean isSeekable = nativeIsSeekable(nativeContextHandle);
-        Log.d(TAG, "Media duration: " + durationUs + " us, Is seekable: " + isSeekable);
-
-        this.seekMap = new FfmpegSeekMap(durationUs, isSeekable);
-        extractorOutput.seekMap(this.seekMap);
-        extractorOutput.endTracks(); // Call after all tracks are built and seek map is set
     }
 
-    // Helper to get error string, can be moved to FfmpegLibrary if generic enough
-    private static String getErrorString(int errorCode) {
-        // Ideally, FfmpegLibrary would have a JNI method to call av_strerror
-        return "FFmpeg error code: " + errorCode;
+    Format.Builder formatBuilder = new Format.Builder()
+        .setSampleMimeType(mimeType)
+        .setChannelCount(channelCount)
+        .setSampleRate(sampleRate);
+
+    if (bitRate > 0) {
+      formatBuilder.setAverageBitrate((int) bitRate);
+    }
+    
+    ArrayList<byte[]> initializationData = new ArrayList<>();
+    if (extraData != null && extraData.length > 0) {
+      initializationData.add(extraData);
     }
 
-    // --- Native JNI Method Declarations (to be implemented in ffmpeg_jni.cc) ---
-
-    /**
-     * Creates and initializes the native FFmpeg context for the extractor.
-     * This context will hold AVFormatContext, custom AVIOContext, etc.
-     * @return A handle (pointer) to the native context, or 0 on failure.
-     */
-    private static native long nativeCreateExtractorContext();
-
-    /**
-     * Opens the input specified by ExtractorInput using custom FFmpeg I/O.
-     * This involves setting up an AVIOContext that reads from the ExtractorInput.
-     * It should call avformat_open_input and avformat_find_stream_info.
-     *
-     * @param contextHandle The native context handle.
-     * @param extractorInput The Java ExtractorInput to read from.
-     * @return 0 on success, or a negative FFmpeg error code on failure.
-     */
-    private static native int nativeOpenInput(long contextHandle, ExtractorInput extractorInput);
-
-    /**
-     * Retrieves format information for a specific stream.
-     * Must be called after nativeOpenInput has successfully found stream info.
-     *
-     * @param contextHandle The native context handle.
-     * @param streamIndex The index of the stream.
-     * @return An FfmpegStreamInfo object, or null on failure.
-     */
-    private static native @Nullable FfmpegStreamInfo nativeGetStreamFormat(long contextHandle, int streamIndex);
-
-    /**
-     * Reads the next packet from the media stream.
-     *
-     * @param contextHandle The native context handle.
-     * @param outputBuffer A direct ByteBuffer to be filled with packet data.
-     *                     The JNI layer must set position and limit correctly.
-     * @return An FfmpegPacketInfo object containing packet metadata and status.
-     *         Should not be null; use isError/isEof fields for status.
-     */
-    private static native FfmpegPacketInfo nativeReadPacket(long contextHandle, ByteBuffer outputBuffer);
-
-    /**
-     * Seeks to the specified time in the media stream.
-     *
-     * @param contextHandle The native context handle.
-     * @param timeUs The target time in microseconds.
-     * @return 0 on success, or a negative FFmpeg error code on failure.
-     */
-    private static native int nativeSeekTo(long contextHandle, long timeUs);
-
-    /**
-     * Gets the duration of the media.
-     * @param contextHandle The native context handle.
-     * @return Duration in microseconds, or C.TIME_UNSET if unknown.
-     */
-    private static native long nativeGetDurationUs(long contextHandle);
-
-    /**
-     * Checks if the media is seekable.
-     * @param contextHandle The native context handle.
-     * @return True if seekable, false otherwise.
-     */
-    private static native boolean nativeIsSeekable(long contextHandle);
-
-    /**
-     * Releases the native FFmpeg extractor context and associated resources.
-     * @param contextHandle The native context handle.
-     */
-    private static native void nativeReleaseExtractorContext(long contextHandle);
-
-
-    // --- JNI Data Transfer Objects ---
-
-    /**
-     * Holds stream format information retrieved from JNI.
-     * Fields should be populated by the native side.
-     */
-    private static class FfmpegStreamInfo {
-        public final String codecName; // e.g., "dsd_lsbf_planar"
-        public final int channels;
-        public final int sampleRate;
-        public final int averageBitrate; // bps
-        @Nullable public final byte[] extradata;
-
-        // Constructor called from JNI
-        public FfmpegStreamInfo(String codecName, int channels, int sampleRate, int averageBitrate, @Nullable byte[] extradata) {
-            this.codecName = codecName;
-            this.channels = channels;
-            this.sampleRate = sampleRate;
-            this.averageBitrate = averageBitrate;
-            this.extradata = extradata;
-        }
+    if (MimeTypes.AUDIO_WMA.equals(mimeType)) {
+        byte[] blockAlignBytes = new byte[2];
+        blockAlignBytes[0] = (byte) (blockAlign & 0xFF);
+        blockAlignBytes[1] = (byte) ((blockAlign >> 8) & 0xFF);
+        initializationData.add(blockAlignBytes);
+    }
+    if (!initializationData.isEmpty()) {
+        formatBuilder.setInitializationData(initializationData);
     }
 
-    /**
-     * Holds packet information retrieved from JNI.
-     * Fields should be populated by the native side.
-     */
-    private static class FfmpegPacketInfo {
-        public final int streamIndex;
-        public final long ptsUs;
-        public final int flags; // ExoPlayer C.BUFFER_FLAG_*
-        public final int size;
-        public final boolean isEof;
-        public final boolean isError;
-        public final int errorCode; // FFmpeg error code if isError is true
 
-        // Constructor called from JNI
-        public FfmpegPacketInfo(int streamIndex, long ptsUs, int flags, int size, boolean isEof, boolean isError, int errorCode) {
-            this.streamIndex = streamIndex;
-            this.ptsUs = ptsUs;
-            this.flags = flags;
-            this.size = size;
-            this.isEof = isEof;
-            this.isError = isError;
-            this.errorCode = errorCode;
-        }
+    Format format = formatBuilder.build();
+
+    trackOutput.format(format);
+
+    long durationUs = nativeGetDuration(nativeContext);
+
+    if (durationUs <= 0) {
+      durationUs = C.TIME_UNSET;
     }
 
-    /**
-     * A simple SeekMap based on FFmpeg's reported duration and seekability.
-     */
-    private static class FfmpegSeekMap implements SeekMap {
-        private final long durationUs;
-        private final boolean isSeekable;
+    extractorOutput.seekMap(new FfmpegSeekMap(durationUs));
 
-        public FfmpegSeekMap(long durationUs, boolean isSeekable) {
-            this.durationUs = (durationUs <= 0 && !isSeekable) ? C.TIME_UNSET : durationUs;
-            this.isSeekable = isSeekable;
-        }
+    Log.d(TAG, String.format("SeekMap initialized - Duration: %d us", durationUs));
+    Log.d(TAG,
+        String.format("Track initialized - Codec ID: %d, MimeType: %s, Sample Rate: %d, Channels: %d, Bitrate: %d, BlockAlign: %d",
+            codecId, mimeType, sampleRate, channelCount, bitRate, blockAlign));
+  }
 
-        @Override
-        public boolean isSeekable() {
-            return isSeekable;
-        }
-
-        @Override
-        public long getDurationUs() {
-            return durationUs;
-        }
-
-        @Override
-        public SeekPoints getSeekPoints(long timeUs) {
-            if (!isSeekable) {
-                return new SeekPoints(SeekPoint.START);
-            }
-            // FFmpeg handles seeking internally. We provide the timeUs to FFmpeg,
-            // and it seeks to the nearest keyframe before or at that time.
-            // The actual byte position is not directly exposed or needed by ExoPlayer here.
-            return new SeekPoints(new SeekPoint(timeUs, 0)); // Position 0 is a placeholder
-        }
+  @Nullable
+  private String getMimeTypeFromCodecId(int codecId) {
+    switch (codecId) {
+      case AV_CODEC_ID_WMAV1:
+      case AV_CODEC_ID_WMAV2:
+        return MimeTypes.AUDIO_WMA;
+      case AV_CODEC_ID_DSD_LSBF:
+      case AV_CODEC_ID_DSD_MSBF:
+      case AV_CODEC_ID_DSD_LSBF_PLANAR:
+      case AV_CODEC_ID_DSD_MSBF_PLANAR:
+        return MimeTypes.AUDIO_DSD;
+      default:
+        Log.w(TAG, "Unknown codec ID from FFmpeg: " + codecId);
+        return null;
     }
+  }
+
+  private int readSample() {
+    timestampBuffer[0] = C.TIME_UNSET;
+    int packetSize = nativeReadPacket(nativeContext, packetBuffer, PACKET_BUFFER_SIZE,
+        timestampBuffer);
+
+    if (packetSize < 0) {
+      if (packetSize == -541478725) {
+        Log.d(TAG, "End of input from nativeReadPacket (AVERROR_EOF)");
+        endOfInput = true;
+        return RESULT_END_OF_INPUT;
+      }
+      Log.w(TAG, "Error reading packet from native: " + packetSize);
+      endOfInput = true; 
+      return RESULT_END_OF_INPUT;
+    }
+
+    if (packetSize == 0) {
+      return RESULT_CONTINUE;
+    }
+
+    ParsableByteArray packetData = new ParsableByteArray(packetBuffer, packetSize);
+    trackOutput.sampleData(packetData, packetSize);
+
+    long sampleTimeUs = timestampBuffer[0];
+    if (sampleTimeUs == C.TIME_UNSET) {
+        Log.w(TAG, "Sample time is UNSET from FFmpeg.");
+    }
+    trackOutput.sampleMetadata(sampleTimeUs, C.BUFFER_FLAG_KEY_FRAME, packetSize, 0, null);
+
+    return RESULT_CONTINUE;
+  }
+  @Override
+  public void seek(long position, long timeUs) {
+    if (released) {
+      return;
+    }
+
+    Log.d(TAG, "seek: position: " + position + ", timeUs: " + timeUs);
+    if (nativeContext != 0) {
+      nativeSeek(nativeContext, timeUs);
+      endOfInput = false;
+    }
+  }
+
+  @Override
+  public void release() {
+    Log.d(TAG, "release() called");
+    if (nativeContext != 0) {
+      try {
+        nativeReleaseContext(nativeContext);
+      } catch (UnsatisfiedLinkError e) {
+        Log.e(TAG, "Native releaseContext method not available", e);
+      }
+      nativeContext = 0;
+    }
+    tracksInitialized = false;
+    endOfInput = false;
+    released = true;
+  }
+
+  // JNI method declarations
+  private native long nativeCreateContext(byte[] inputData, int inputLength);
+
+  private native int nativeGetAudioCodecId(long context);
+
+  private native int nativeGetSampleRate(long context);
+
+  private native int nativeGetChannelCount(long context);
+
+  private native long nativeGetBitRate(long context);
+
+  private native int nativeGetBlockAlign(long context);
+
+  private native byte[] nativeGetExtraData(long context);
+
+  private native int nativeReadPacket(long context, byte[] outputBuffer, int outputBufferSize,
+      long[] timestampOut);
+
+  private native long nativeGetDuration(long context);
+
+  private native boolean nativeSeek(long context, long timeUs);
+
+  private native void nativeReleaseContext(long context);
 }

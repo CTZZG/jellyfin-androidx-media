@@ -24,13 +24,12 @@ project(libffmpegJNI C CXX)
 # Additional flags needed for "arm64-v8a" from NDK 23.1.7779620 and above.
 # See https://github.com/google/ExoPlayer/issues/9933#issuecomment-1029775358.
 if(${ANDROID_ABI} MATCHES "arm64-v8a")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-Bsymbolic") # Append to existing flags if any
+    set(CMAKE_CXX_FLAGS "-Wl,-Bsymbolic")
 endif()
 
 set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
 set(ffmpeg_binaries "${ffmpeg_location}/android-libs/${ANDROID_ABI}")
 
-# Add avformat to the list of libraries to process
 foreach(ffmpeg_lib avutil swresample avcodec avformat)
     set(ffmpeg_lib_filename lib${ffmpeg_lib}.a)
     set(ffmpeg_lib_file_path ${ffmpeg_binaries}/${ffmpeg_lib_filename})
@@ -46,16 +45,18 @@ endforeach()
 
 include_directories(${ffmpeg_location})
 find_library(android_log_lib log)
+find_library(z_lib z)
 
 add_library(ffmpegJNI
             SHARED
-            ffmpeg_jni.cc)
+            ffmpeg_jni.cc
+            ffmpeg_extractor_jni.cc)
 
 target_link_libraries(ffmpegJNI
                       PRIVATE android
                       PRIVATE swresample
-                      PRIVATE avutil    # avutil 通常是最底层的
-                      PRIVATE avcodec   # avcodec 依赖 avutil
-                      PRIVATE avformat  # avformat 依赖 avcodec 和 avutil
-                      PRIVATE ${android_log_lib}
-                      PRIVATE z)
+                      PRIVATE avformat
+                      PRIVATE avcodec
+                      PRIVATE avutil
+                      PRIVATE ${z_lib}
+                      PRIVATE ${android_log_lib})
