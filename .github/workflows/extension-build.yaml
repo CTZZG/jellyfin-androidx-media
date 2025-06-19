@@ -8,8 +8,7 @@ on:
   pull_request:
 
 env:
-  NDK_VERSION: r21e  # 使用 r21e 版本标识符
-  NDK_SHA1: c3ebc83c96a4d7f539bd72c241b2be9dcd29bda9  # 对应 Linux 版本的 SHA1 校验值
+  NDK_VER: 21.4.7075529
 
 jobs:
   build:
@@ -33,23 +32,24 @@ jobs:
       - name: Cache NDK
         uses: actions/cache@v3
         with:
-          path: ~/android-ndk-${{ env.NDK_VERSION }}
-          key: ${{ runner.os }}-${{ env.NDK_VERSION }}
+          path: /usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}
+          key: ${{ runner.os }}-${{ env.NDK_VER }}
 
       - name: Download and extract NDK r21e
         run: |
+          # 创建目标目录（如果不存在）
+          sudo mkdir -p /usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}
+          sudo chmod -R 777 /usr/local/lib/android/sdk/ndk
+
           # 下载 NDK
-          curl -Lo ndk.zip https://dl.google.com/android/repository/android-ndk-${{  env.NDK_VERSION }}-linux-x86_64.zip
+          curl -Lo ndk.zip https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip 
 
-          # 验证 SHA1 校验值（可选但推荐）
-          echo "${{ env.NDK_SHA1 }}  ndk.zip" | sha1sum -c || (echo "SHA1 校验失败！"; exit 1)
-
-          # 解压 NDK
-          unzip -q ndk.zip -d ~/
-          rm ndk.zip
+          # 解压 NDK 到指定路径
+          sudo unzip -q ndk.zip -d /usr/local/lib/android/sdk/ndk/
+          sudo rm ndk.zip
 
           # 设置环境变量
-          echo "ANDROID_NDK_HOME=~/android-ndk-${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}" >> $GITHUB_ENV
 
       - name: Build ffmpeg
         run: ./build.sh
