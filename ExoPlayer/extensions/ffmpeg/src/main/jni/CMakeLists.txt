@@ -54,7 +54,8 @@ add_library(ffmpegJNI
 target_link_libraries(ffmpegJNI
                       PRIVATE android
                       PRIVATE swresample
-                      PRIVATE avcodec
-                      PRIVATE avutil
-                      PRIVATE avformat  # Added avformat here
-                      PRIVATE ${android_log_lib})
+                      PRIVATE avutil    # avutil 通常是最底层的
+                      PRIVATE avcodec   # avcodec 依赖 avutil
+                      PRIVATE avformat  # avformat 依赖 avcodec 和 avutil
+                      PRIVATE ${android_log_lib}
+                      PRIVATE z)
