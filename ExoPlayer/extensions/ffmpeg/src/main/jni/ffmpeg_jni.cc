@@ -902,7 +902,7 @@ EXTRACTOR_FUNC(jint, nativeSeekTo, jlong contextHandle, jlong timeUs) {
     if (ret < 0) {
         logError("Extractor: av_seek_frame", ret);
     } else {
-        LOGD("Extractor: nativeSeekTo successful for timeUs %" PRId64 " (ts %" PRId64 ")", timeUs, target_ts_in_stream_tb);
+        LOGD("Extractor: nativeSeekTo successful for timeUs %lld (ts %lld)", (long long)timeUs, (long long)target_ts_in_stream_tb);
     }
     return ret;
 }

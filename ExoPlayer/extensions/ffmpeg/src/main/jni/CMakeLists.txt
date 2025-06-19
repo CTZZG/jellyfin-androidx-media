@@ -24,13 +24,14 @@ project(libffmpegJNI C CXX)
 # Additional flags needed for "arm64-v8a" from NDK 23.1.7779620 and above.
 # See https://github.com/google/ExoPlayer/issues/9933#issuecomment-1029775358.
 if(${ANDROID_ABI} MATCHES "arm64-v8a")
-    set(CMAKE_CXX_FLAGS "-Wl,-Bsymbolic")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-Bsymbolic") # Append to existing flags if any
 endif()
 
 set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
 set(ffmpeg_binaries "${ffmpeg_location}/android-libs/${ANDROID_ABI}")
 
-foreach(ffmpeg_lib avutil swresample avcodec)
+# Add avformat to the list of libraries to process
+foreach(ffmpeg_lib avutil swresample avcodec avformat)
     set(ffmpeg_lib_filename lib${ffmpeg_lib}.a)
     set(ffmpeg_lib_file_path ${ffmpeg_binaries}/${ffmpeg_lib_filename})
     add_library(
@@ -55,4 +56,5 @@ target_link_libraries(ffmpegJNI
                       PRIVATE swresample
                       PRIVATE avcodec
                       PRIVATE avutil
+                      PRIVATE avformat  # Added avformat here
                       PRIVATE ${android_log_lib})
