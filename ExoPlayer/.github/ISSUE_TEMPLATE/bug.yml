@@ -1,0 +1,19 @@
+name: Bug Report
+description: Report a bug in the ExoPlayer library
+labels: ["bug", "needs triage"]
+body:
+- type: markdown
+  attributes:
+    value: |
+      **Please do not file new issues in this repository.**
+
+      All new bugs should be filed in the
+      [Media3 issue tracker](https://github.com/androidx/media/issues/new?template=bug.yml).
+
+      We will continue to update and reply to existing issues in this repository
+      and will keep existing feature requests active.
+- type: textarea
+  attributes:
+    label: Bug
+  validations:
+    required: true
