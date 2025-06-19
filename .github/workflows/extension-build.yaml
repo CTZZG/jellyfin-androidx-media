@@ -9,6 +9,8 @@ on:
 
 env:
   NDK_VER: 21.4.7075529  # 不允许修改此值
+  # 定义 NDK 的目标安装路径，方便复用
+  NDK_INSTALL_PATH: /usr/local/lib/android/sdk/ndk/21.4.7075529
 
 jobs:
   build:
@@ -30,32 +32,54 @@ jobs:
         uses: gradle/gradle-build-action@v2
 
       - name: Cache NDK
+        id: cache-ndk
         uses: actions/cache@v3
         with:
-          path: /usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}
+          path: ${{ env.NDK_INSTALL_PATH }}
           key: ${{ runner.os }}-${{ env.NDK_VER }}
 
       - name: Download and extract NDK r21e
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
-          # 创建目标目录（如果不存在）
-          sudo mkdir -p /usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}
-          sudo chmod -R 777 /usr/local/lib/android/sdk/ndk
-
-          # 下载 NDK
-          curl -Lo ndk.zip https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip 
-
+          echo "NDK cache miss. Downloading NDK r21e..."
+          sudo mkdir -p ${{ env.NDK_INSTALL_PATH }}
+          curl -Lo ndk.zip https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip
+          
           # 解压到临时目录
-          unzip -q ndk.zip -d /tmp/
+          TMP_EXTRACT_DIR=$(mktemp -d)
+          unzip -q ndk.zip -d "${TMP_EXTRACT_DIR}"
           rm ndk.zip
 
-          # 移动并重命名解压后的目录到目标路径
-          sudo mv /tmp/android-ndk-r21e /usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}
+          # 将解压后的 android-ndk-r21e 目录的 *内容* 移动到目标路径
+          # 这是关键的修正：确保 NDK 的根目录就是 NDK_INSTALL_PATH
+          sudo mv "${TMP_EXTRACT_DIR}/android-ndk-r21e"/* "${{ env.NDK_INSTALL_PATH }}/"
+          
+          # 清理临时目录
+          sudo rm -rf "${TMP_EXTRACT_DIR}"
+          echo "NDK downloaded and extracted to ${{ env.NDK_INSTALL_PATH }}"
 
-          # 设置环境变量
-          echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/${{ env.NDK_VER }}" >> $GITHUB_ENV
+      - name: Set ANDROID_NDK_HOME Environment Variable
+        run: |
+          echo "ANDROID_NDK_HOME=${{ env.NDK_INSTALL_PATH }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME is set to: ${{ env.NDK_INSTALL_PATH }}"
+
+      - name: Verify NDK installation (for debugging)
+        run: |
+          echo "ANDROID_NDK_HOME is: $ANDROID_NDK_HOME"
+          ls -la $ANDROID_NDK_HOME
+          echo "Checking for clang:"
+          if [ -f "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi16-clang" ]; then
+            ls -la $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi16-clang
+            $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi16-clang --version
+          else
+            echo "Clang not found at expected path!"
+            exit 1
+          fi
 
       - name: Build ffmpeg
-        run: ./build.sh
+        run: |
+          chmod +x ./build.sh
+          ./build.sh
 
       - name: Build extension and publish library locally
         run: ./gradlew :exoplayer-ffmpeg-extension:publishToMavenLocal
