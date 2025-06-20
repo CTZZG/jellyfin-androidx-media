@@ -13,13 +13,14 @@ extern "C" {
 #endif
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h> // For avcodec_get_name and AVCodecID
-#include <libavutil/error.h>
-#include <libavutil/log.h>    // For av_log_set_callback if NDEBUG is not defined
-#include <libavutil/time.h>   // For AV_TIME_BASE_Q
+#include <libavutil/error.h>    // For AV_ERROR_MAX_STRING_SIZE and av_strerror
+#include <libavutil/log.h>      // For av_log_set_callback if NDEBUG is not defined
+#include <libavutil/time.h>     // For AV_TIME_BASE_Q
 }
 
 #define LOG_TAG "ffmpeg_extractor_jni"
 #define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__))
+#define LOGW(...) ((void)__android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)) // Added LOGW
 
 #ifdef NDEBUG
 #define LOGD(...)
@@ -76,7 +77,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 void log_error(const char *func_name, int error_no) {
-    char buffer[AV_ERROR_MAX_STRING_SIZE]; // Use AV_ERROR_MAX_STRING_SIZE for safety
+    char buffer[AV_ERROR_MAX_STRING_SIZE];
     av_strerror(error_no, buffer, sizeof(buffer));
     LOGE("Error in %s: %s (code: %d, FFmpeg error: %d)", func_name, buffer, error_no, error_no);
 }
@@ -117,9 +118,9 @@ static int avio_read_packet_callback(void *opaque, uint8_t *buf, int buf_size) {
     }
 
     int result;
-    if (bytes_read < 0) { // ExoPlayer C.RESULT_END_OF_INPUT is -1
+    if (bytes_read < 0) { 
         result = AVERROR_EOF;
-    } else if (bytes_read == 0) { // Java read 0 bytes, not EOF
+    } else if (bytes_read == 0) { 
         result = 0;
     } else {
         env->GetByteArrayRegion(helper->read_buffer_global_ref, 0, bytes_read, (jbyte *)buf);
@@ -201,24 +202,19 @@ static void demux_context_free(FfmpegDemuxContext *ctx) {
 
     if (ctx->format_ctx) {
         LOGD("demux_context_free: Closing AVFormatContext %p", ctx->format_ctx);
-        avformat_close_input(&ctx->format_ctx); 
-        ctx->avio_ctx = NULL; 
-        ctx->avio_internal_buffer = NULL; 
+        avformat_close_input(&ctx->format_ctx);
     } else {
         if (ctx->avio_ctx) {
-            LOGD("demux_context_free: Freeing AVIOContext %p (format_ctx was null)", ctx->avio_ctx);
-            if (ctx->avio_internal_buffer) { 
-                 av_free(ctx->avio_internal_buffer); 
-                 ctx->avio_internal_buffer = NULL;
-            }
-            avio_context_free(&ctx->avio_ctx); 
-            ctx->avio_ctx = NULL;
+            LOGD("demux_context_free: Freeing AVIOContext %p (as format_ctx was NULL or open failed early)", ctx->avio_ctx);
+            avio_context_free(&ctx->avio_ctx);
         } else if (ctx->avio_internal_buffer) {
-            LOGD("demux_context_free: Freeing avio_internal_buffer %p (avio_ctx was null)", ctx->avio_internal_buffer);
+            LOGD("demux_context_free: Freeing avio_internal_buffer %p (as avio_ctx was NULL)", ctx->avio_internal_buffer);
             av_free(ctx->avio_internal_buffer);
-            ctx->avio_internal_buffer = NULL;
         }
     }
+    ctx->format_ctx = NULL; 
+    ctx->avio_ctx = NULL;
+    ctx->avio_internal_buffer = NULL;
 
     if (ctx->jni_helper) {
         JNIEnv *env = NULL;
@@ -259,11 +255,10 @@ static void demux_context_free(FfmpegDemuxContext *ctx) {
     }
 
     free(ctx);
-    LOGD("demux_context_free: Context %p itself freed", ctx);
+    LOGD("demux_context_free: Context %p structure itself freed", ctx);
 }
 
-// Corrected: Removed explicit jobject thiz from parameters as macro provides it.
-FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext) {
+FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext) { // Removed jobject thiz from here, macro provides it
     FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)calloc(1, sizeof(FfmpegDemuxContext));
     if (!ctx) {
         LOGE("nativeCreateContext: Failed to allocate FfmpegDemuxContext");
@@ -278,14 +273,14 @@ FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext) {
         return 0L;
     }
     ctx->jni_helper->vm = g_vm;
-    ctx->jni_helper->ffmpeg_extractor_instance_global_ref = env->NewGlobalRef(thiz); // thiz is from macro
+    ctx->jni_helper->ffmpeg_extractor_instance_global_ref = env->NewGlobalRef(thiz);
     if (!ctx->jni_helper->ffmpeg_extractor_instance_global_ref) {
         LOGE("nativeCreateContext: Failed to create global ref for FfmpegExtractor instance");
         demux_context_free(ctx);
         return 0L;
     }
 
-    jclass extractor_clazz = env->GetObjectClass(thiz); // thiz is from macro
+    jclass extractor_clazz = env->GetObjectClass(thiz);
     if (!extractor_clazz) {
         LOGE("nativeCreateContext: Failed to get FfmpegExtractor class");
         demux_context_free(ctx);
@@ -298,7 +293,7 @@ FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext) {
 
     if (!ctx->jni_helper->read_method_id || !ctx->jni_helper->seek_method_id || !ctx->jni_helper->get_length_method_id) {
         LOGE("nativeCreateContext: Failed to get JNI method IDs. read_method_id: %p, seek_method_id: %p, get_length_method_id: %p",
-             ctx->jni_helper->read_method_id, ctx->jni_helper->seek_method_id, ctx->jni_helper->get_length_method_id);
+             (void*)ctx->jni_helper->read_method_id, (void*)ctx->jni_helper->seek_method_id, (void*)ctx->jni_helper->get_length_method_id);
         env->DeleteLocalRef(extractor_clazz);
         demux_context_free(ctx);
         return 0L;
@@ -350,10 +345,7 @@ FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext) {
 
     ctx->format_ctx->pb = ctx->avio_ctx;
     ctx->format_ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
-    // ctx->format_ctx->probesize = 2000000; // Example: 2MB probe size
-    // ctx->format_ctx->max_analyze_duration = 5 * AV_TIME_BASE;
-
-
+    
     int ret = avformat_open_input(&ctx->format_ctx, NULL, NULL, NULL);
     if (ret < 0) {
         log_error("avformat_open_input", ret);
@@ -453,15 +445,11 @@ FFMPEG_EXTRACTOR_FUNC(jint, nativeReadPacket, jlong context, jbyteArray outputBu
     FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)context;
     if (!ctx || !ctx->format_ctx || ctx->audio_stream_index == -1 || !outputBuffer) {
         LOGE("nativeReadPacket: Invalid parameters. Context: %p, FormatCtx: %p, StreamIndex: %d",
-             ctx, ctx ? ctx->format_ctx : NULL, ctx ? ctx->audio_stream_index : -2);
+             (void*)ctx, ctx ? (void*)ctx->format_ctx : NULL, ctx ? ctx->audio_stream_index : -2);
         return AVERROR(EINVAL);
     }
 
-    AVPacket pkt; // Stack allocated
-    // For av_read_frame, it's usually enough that pkt.data is NULL and pkt.size is 0
-    // or use av_packet_unref on it if it might have been used before.
-    // Since it's a fresh stack variable, zeroing is safest or let av_read_frame initialize.
-    // av_read_frame will (re)initialize the packet.
+    AVPacket pkt; 
     
     int ret = av_read_frame(ctx->format_ctx, &pkt);
     if (ret < 0) {
@@ -470,10 +458,10 @@ FFMPEG_EXTRACTOR_FUNC(jint, nativeReadPacket, jlong context, jbyteArray outputBu
         } else {
             LOGD("nativeReadPacket: av_read_frame returned EOF");
         }
-        // Even on error, if av_read_frame might have touched pkt (e.g. allocated some internal buffer before failing),
-        // unref is safer. However, if ret < 0, pkt should not have valid data.
-        // For safety and consistency with success path:
-        av_packet_unref(&pkt); 
+        // pkt does not need unref if av_read_frame fails and returns < 0
+        // as per documentation: "On error a negative value is returned,
+        // and pkt is undefined." However, being safe doesn't hurt if not performance critical.
+        // For now, let's skip unref on error to align with "pkt is undefined".
         return ret; 
     }
 
@@ -496,7 +484,7 @@ FFMPEG_EXTRACTOR_FUNC(jint, nativeReadPacket, jlong context, jbyteArray outputBu
     }
     
     if (timestampOut != NULL) {
-        env->SetLongArrayRegion(timestampOut, 0, 1, ×tampUs);
+        env->SetLongArrayRegion(timestampOut, 0, 1, &timestampUs);
     }
 
     env->SetByteArrayRegion(outputBuffer, 0, pkt.size, (jbyte *)pkt.data);
@@ -522,12 +510,12 @@ FFMPEG_EXTRACTOR_FUNC(jlong, nativeGetDuration, jlong context) {
   if (ctx->format_ctx->duration == AV_NOPTS_VALUE || ctx->format_ctx->duration <=0) {
       return EXO_C_TIME_UNSET; 
   }
-  return ctx->format_ctx->duration; // Already in microseconds (AV_TIME_BASE units)
+  return ctx->format_ctx->duration;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jboolean, nativeSeek, jlong context, jlong timeUs) {
     FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)context;
-    if (!ctx || !ctx->format_ctx || !ctx->audio_stream) { // check audio_stream
+    if (!ctx || !ctx->format_ctx || !ctx->audio_stream) {
         LOGE("nativeSeek: Invalid context or no audio stream for seeking.");
         return JNI_FALSE;
     }
@@ -541,7 +529,7 @@ FFMPEG_EXTRACTOR_FUNC(jboolean, nativeSeek, jlong context, jlong timeUs) {
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
-        LOGW("nativeSeek: av_seek_frame (BACKWARD) failed: %s. Trying AVSEEK_FLAG_ANY.", errbuf);
+        LOGW("nativeSeek: av_seek_frame (BACKWARD) failed: %s. Trying AVSEEK_FLAG_ANY.", errbuf); // Corrected: LOGW
         ret = av_seek_frame(ctx->format_ctx, ctx->audio_stream_index, target_ts, AVSEEK_FLAG_ANY);
         if (ret < 0) {
             av_strerror(ret, errbuf, sizeof(errbuf));
@@ -557,7 +545,7 @@ FFMPEG_EXTRACTOR_FUNC(jboolean, nativeSeek, jlong context, jlong timeUs) {
 
 FFMPEG_EXTRACTOR_FUNC(void, nativeReleaseContext, jlong context) {
     FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)context;
-    LOGD("nativeReleaseContext called with context: %p", ctx);
+    LOGD("nativeReleaseContext called with context: %p", (void*)ctx);
     if (ctx) {
         demux_context_free(ctx);
     }
