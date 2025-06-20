@@ -348,18 +348,53 @@ public final class FfmpegExtractor implements Extractor {
       }
       targetDirectBuffer.limit(readLength);
 
-      int bytesRead = 0;
-      int currentRead;
-      // ExtractorInput.read might not fill the buffer in one go.
-      while (bytesRead < readLength) {
-        currentRead = input.read(targetDirectBuffer); // Reads into the direct ByteBuffer
-        if (currentRead == C.RESULT_END_OF_INPUT) {
-          if (bytesRead == 0) return AVERROR_EOF_JNI; // True EOF
-          break; // EOF after some data read
-        }
-        bytesRead += currentRead;
+      if (readLength == 0) {
+        return 0;
       }
-      return bytesRead;
+
+      int totalBytesReadToTarget = 0;
+
+      if (targetDirectBuffer.hasArray()) {
+        byte[] backingArray = targetDirectBuffer.array();
+        int offsetInBackingArray = targetDirectBuffer.arrayOffset() + targetDirectBuffer.position();
+
+        while (totalBytesReadToTarget < readLength) {
+          int bytesReadThisIteration = input.read(
+            backingArray,
+            offsetInBackingArray + totalBytesReadToTarget,
+            readLength - totalBytesReadToTarget);
+
+          if (bytesReadThisIteration == C.RESULT_END_OF_INPUT) {
+            if (totalBytesReadToTarget == 0) {
+              return AVERROR_EOF_JNI;
+            }
+            break;
+          }
+          totalBytesReadToTarget += bytesReadThisIteration;
+        }
+
+        if (totalBytesReadToTarget > 0) {
+          targetDirectBuffer.position(totalBytesReadToTarget);
+        }
+      } else {
+        byte[] tempBuffer = new byte[Math.min(readLength, 8192)];
+
+        while (targetDirectBuffer.hasRemaining()) {
+          int bytesToReadInChunk = Math.min(tempBuffer.length, targetDirectBuffer.remaining());
+          int bytesReadFromInput = input.read(tempBuffer, 0, bytesToReadInChunk);
+
+          if (bytesReadFromInput == C.RESULT_END_OF_INPUT) {
+            if (targetDirectBuffer.position() == 0) {
+              return AVERROR_EOF_JNI;
+            }
+            break;
+          }
+          targetDirectBuffer.put(tempBuffer, 0, bytesReadFromInput);
+        }
+      }
+
+      return targetDirectBuffer.position();
+      
     } catch (IOException e) {
       Log.e(TAG, "IOException in readFromExtractorInput", e);
       return AVERROR_EIO_JNI; // Generic I/O error for FFmpeg
