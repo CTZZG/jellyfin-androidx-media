@@ -28,6 +28,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 
 /**
  * Defines common file type constants and helper methods.
@@ -220,7 +221,7 @@ public final class FileTypes {
       return FileTypes.UNKNOWN;
     }
     // Use toLowerCase for extension matching for robustness
-    String lowerCaseFilename = Util.toLowerInvariant(filename);
+    String lowerCaseFilename = filename.toLowerCase(Locale.ROOT);
     if (lowerCaseFilename.endsWith(EXTENSION_AC3) || lowerCaseFilename.endsWith(EXTENSION_EC3)) {
       return FileTypes.AC3;
     } else if (lowerCaseFilename.endsWith(EXTENSION_AC4)) {
