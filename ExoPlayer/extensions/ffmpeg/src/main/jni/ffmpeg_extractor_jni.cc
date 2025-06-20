@@ -3,8 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern "C"
-{
+extern "C" {
 #ifdef __cplusplus
 #define __STDC_CONSTANT_MACROS
 #ifdef _STDINT_H
@@ -40,11 +39,14 @@ extern "C"
 
 #define AVIO_BUFFER_SIZE (32 * 1024) // 32KB AVIO buffer
 
-struct InputWrapper {
-  uint8_t *data_buf;
-  int64_t data_len;
-  int64_t cur_pos;
-};
+typedef struct JniCallbackHelper {
+  JavaVM *vm;
+  jobject ffmpeg_extractor_instance_global_ref;
+  jmethodID read_method_id;
+  jmethodID seek_method_id;
+  jmethodID get_length_method_id;
+  jbyteArray read_buffer_global_ref;
+} JniCallbackHelper;
 
 struct FfmpegDemuxContext {
   AVFormatContext *format_ctx;
@@ -52,420 +54,487 @@ struct FfmpegDemuxContext {
   int audio_stream_index;
   AVStream *audio_stream;
   InputWrapper *input_wrapper;
+  JniCallbackHelper *jni_helper;
+  uint8_t *avio_internal_buffer;
 };
+
+static JavaVM *g_vm = NULL;
+
+JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
+    g_vm = vm;
+    JNIEnv *env;
+    if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    LOGD("ffmpeg_extractor_jni JNI_OnLoad successful");
+    return JNI_VERSION_1_6;
+}
 
 void log_error(const char *func_name, int error_no) {
   char buffer[256];
   av_strerror(error_no, buffer, sizeof(buffer));
-  LOGE("Error in %s: %s", func_name, buffer);
-}
-
-static int input_wrapper_init(
-    InputWrapper *iw,
-    JNIEnv *env,
-    jbyteArray inputData,
-    jint inputLength) {
-  iw->data_buf = (uint8_t *) malloc(inputLength * sizeof(uint8_t));
-  if (!iw->data_buf) {
-    LOGD("input_wrapper_init: failed to allocate data_buf");
-    return AVERROR(ENOMEM);
-  }
-
-  env->GetByteArrayRegion(inputData, 0, inputLength, (jbyte *) iw->data_buf);
-  if (env->ExceptionCheck()) {
-    LOGD("input_wrapper_init: failed to get byte array region");
-    free(iw->data_buf);
-    return AVERROR(EINVAL);
-  }
-
-  iw->data_len = inputLength;
-  iw->cur_pos = 0;
-  LOGD("input_wrapper_init: cur_pos: %lld, length: %lld", iw->cur_pos, iw->data_len);
-  return 0;
-}
-
-static int input_wrapper_read(InputWrapper *iw, uint8_t *buf, int buf_size) {
-  LOGD("input_wrapper_read: buf_size=%d", buf_size);
-  if (!buf || buf_size <= 0) {
-    LOGE("input_wrapper_read: invalid parameters");
-    return AVERROR(EINVAL);
-  }
-
-  if (!iw->data_buf) {
-    LOGE("input_wrapper_read: data_buf is NULL");
-    return AVERROR(EINVAL);
-  }
-
-  int64_t pos = iw->cur_pos;
-  int64_t size = iw->data_len;
-
-  if (pos >= size) {
-    return AVERROR_EOF;
-  }
-
-  int64_t remaining = size - pos;
-  int64_t to_copy = remaining < buf_size ? remaining : buf_size;
-  if (to_copy <= 0) {
-    LOGE("input_wrapper_read: to_copy is 0");
-    return 0;
-  }
-
-  memcpy(buf, iw->data_buf + pos, to_copy);
-  iw->cur_pos += to_copy;
-
-  return (int) to_copy;
-}
-
-static int64_t input_wrapper_seek(InputWrapper *iw, int64_t offset, int whence) {
-  LOGD("input_wrapper_seek: offset=%lld, whence=%d", offset, whence);
-  if (!iw->data_buf) {
-    LOGE("input_wrapper_seek: data_buf is NULL");
-    return AVERROR(EINVAL);
-  }
-
-  if (whence & AVSEEK_SIZE) {
-    return iw->data_len;
-  }
-
-  int64_t target;
-  switch (whence & ~AVSEEK_FORCE) {
-    case SEEK_SET:
-      target = offset;
-      break;
-    case SEEK_CUR:
-      target = iw->cur_pos + offset;
-      break;
-    case SEEK_END:
-      target = iw->data_len + offset;
-      break;
-    default:
-      return AVERROR(EINVAL);
-  }
-
-  if (target < 0 || target > iw->data_len) {
-    LOGE("input_wrapper_seek: overflow, target=%lld, length=%lld", target, iw->data_len);
-    return AVERROR(EINVAL);
-  }
-
-  iw->cur_pos = target;
-  return target;
-}
-
-static void input_wrapper_free(InputWrapper *iw) {
-  if (iw->data_buf) {
-    free(iw->data_buf);
-    iw->data_buf = NULL;
-  }
-  iw->data_len = 0;
-  iw->cur_pos = 0;
+  LOGE("Error in %s: %s (code: %d)", func_name, buffer, error_no);
 }
 
 static int avio_read_packet_callback(void *opaque, uint8_t *buf, int buf_size) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) opaque;
-  return input_wrapper_read(ctx->input_wrapper, buf, buf_size);
+  JniCallbackHelper *helper = (JniCallbackHelper *)opaque;
+  JNIEnv *env;
+  int get_env_stat = helper->vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+
+  if (get_env_stat == JNI_EDETACHED) {
+      LOGD("AVIO Read: Attaching current thread to JVM");
+      if (helper->vm->AttachCurrentThread(&env, NULL) != 0) {
+          LOGE("AVIO Read: Failed to attach current thread");
+          return AVERROR(EIO);
+      }
+  } else if (get_env_stat == JNI_EVERSION) {
+      LOGE("AVIO Read: JNI version not supported");
+      return AVERROR(EIO);
+  }
+  if (!helper->ffmpeg_extractor_instance_global_ref || !helper->read_method_id) {
+      LOGE("AVIO Read: JNI helper not properly initialized");
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return AVERROR(EINVAL);
+  }
+  
+  jint bytes_read = env->CallIntMethod(helper->ffmpeg_extractor_instance_global_ref,
+                                       helper->read_method_id,
+                                       helper->read_buffer_global_ref, 0, buf_size);
+
+  if (env->ExceptionCheck()) {
+      LOGE("AVIO Read: Exception occurred calling Java read method");
+      env->ExceptionDescribe();
+      env->ExceptionClear();
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return AVERROR(EIO);
+  }
+
+  if (bytes_read < 0) {
+      LOGD("AVIO Read: End of input from Java: %d", bytes_read);
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return AVERROR_EOF;
+  } else if (bytes_read > 0) {
+      env->GetByteArrayRegion(helper->read_buffer_global_ref, 0, bytes_read, (jbyte *)buf);
+       if (env->ExceptionCheck()) {
+          LOGE("AVIO Read: Exception occurred in GetByteArrayRegion");
+          env->ExceptionDescribe();
+          env->ExceptionClear();
+          if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+          return AVERROR(EIO);
+      }
+  }
+  if (get_env_stat == JNI_EDETACHED) {
+      helper->vm->DetachCurrentThread();
+  }
+  return bytes_read;
 }
 
 static int64_t avio_seek_callback(void *opaque, int64_t offset, int whence) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) opaque;
-  return input_wrapper_seek(ctx->input_wrapper, offset, whence);
+  JniCallbackHelper *helper = (JniCallbackHelper *)opaque;
+  JNIEnv *env;
+  int get_env_stat = helper->vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+
+   if (get_env_stat == JNI_EDETACHED) {
+      LOGD("AVIO Seek: Attaching current thread to JVM");
+      if (helper->vm->AttachCurrentThread(&env, NULL) != 0) {
+          LOGE("AVIO Seek: Failed to attach current thread");
+          return AVERROR(EIO);
+      }
+  } else if (get_env_stat == JNI_EVERSION) {
+      LOGE("AVIO Seek: JNI version not supported");
+      return AVERROR(EIO);
+  }
+
+  if (!helper->ffmpeg_extractor_instance_global_ref) {
+      LOGE("AVIO Seek: JNI helper not properly initialized");
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return AVERROR(EINVAL);
+  }
+
+  if (whence == AVSEEK_SIZE) {
+      if (!helper->get_length_method_id) {
+           LOGE("AVIO Seek: get_length_method_id not initialized");
+           if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+           return AVERROR(EINVAL);
+      }
+      jlong length = env->CallLongMethod(helper->ffmpeg_extractor_instance_global_ref, helper->get_length_method_id);
+      if (env->ExceptionCheck()) {
+          LOGE("AVIO Seek: Exception occurred calling Java getLength method");
+          env->ExceptionDescribe();
+          env->ExceptionClear();
+          if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+          return AVERROR(EIO);
+      }
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return length;
+  }
+  
+  if (!helper->seek_method_id) {
+      LOGE("AVIO Seek: seek_method_id not initialized");
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return AVERROR(EINVAL);
+  }
+
+  jlong new_position = env->CallLongMethod(helper->ffmpeg_extractor_instance_global_ref,
+                                           helper->seek_method_id,
+                                           offset, whence);
+  if (env->ExceptionCheck()) {
+      LOGE("AVIO Seek: Exception occurred calling Java seek method");
+      env->ExceptionDescribe();
+      env->ExceptionClear();
+      if (get_env_stat == JNI_EDETACHED) helper->vm->DetachCurrentThread();
+      return AVERROR(EIO);
+  }
+  if (get_env_stat == JNI_EDETACHED) {
+      helper->vm->DetachCurrentThread();
+  }
+  return new_position;
 }
 
 static void demux_context_free(FfmpegDemuxContext *ctx) {
-  LOGD("demux_context_free: format_ctx");
+  if (!ctx) return;
+
+  LOGD("demux_context_free: Freeing FfmpegDemuxContext");
   if (ctx->format_ctx) {
     avformat_close_input(&ctx->format_ctx);
     ctx->format_ctx = NULL;
-    ctx->audio_stream_index = -1;
-    ctx->audio_stream = NULL;
   }
 
-  LOGD("demux_context_free: avio_ctx");
+  if (ctx->avio_internal_buffer) {
+    ctx->avio_internal_buffer = NULL;
+  }
   if (ctx->avio_ctx) {
     av_freep(&ctx->avio_ctx->buffer);
     avio_context_free(&ctx->avio_ctx);
     ctx->avio_ctx = NULL;
   }
 
-  LOGD("demux_context_free: input_wrapper");
-  if (ctx->input_wrapper) {
-    input_wrapper_free(ctx->input_wrapper);
-    free(ctx->input_wrapper);
-    ctx->input_wrapper = NULL;
-  }
+  if (ctx->jni_helper) {
+    JNIEnv *env;
+    int get_env_stat = ctx->jni_helper->vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    bool attached = false;
+    if (get_env_stat == JNI_EDETACHED) {
+        if (ctx->jni_helper->vm->AttachCurrentThread(&env, NULL) == 0) {
+            attached = true;
+        } else {
+            LOGE("demux_context_free: Failed to attach current thread to free global refs");
+        }
+    }
+    
+    if (env) {
+         if (ctx->jni_helper->ffmpeg_extractor_instance_global_ref) {
+            env->DeleteGlobalRef(ctx->jni_helper->ffmpeg_extractor_instance_global_ref);
+            ctx->jni_helper->ffmpeg_extractor_instance_global_ref = NULL;
+        }
+        if (ctx->jni_helper->read_buffer_global_ref) {
+            env->DeleteGlobalRef(ctx->jni_helper->read_buffer_global_ref);
+            ctx->jni_helper->read_buffer_global_ref = NULL;
+        }
+    }
 
-  LOGD("demux_context_free: ctx");
-  free(ctx);
-  LOGD("demux_context_free: done");
+    if (attached) {
+      ctx->jni_helper->vm->DetachCurrentThread();
+  }
+  free(ctx->jni_helper);
+  ctx->jni_helper = NULL;
 }
 
-FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext, jbyteArray inputData, jint inputLength) {
-  if (!inputData || inputLength <= 0) {
-    LOGE("Invalid parameters for nativeCreateContext");
-    return 0L;
-  }
+free(ctx);
+LOGD("demux_context_free: Done");
+}
 
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) calloc(1, sizeof(FfmpegDemuxContext));
+FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext, jobject thiz) {
+  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)calloc(1, sizeof(FfmpegDemuxContext));
   if (!ctx) {
-    LOGE("Failed to allocate FfmpegDemuxContext");
-    return 0L;
+      LOGE("Failed to allocate FfmpegDemuxContext");
+      return 0L;
   }
-
   ctx->audio_stream_index = -1;
-  ctx->input_wrapper = (InputWrapper *) calloc(1, sizeof(InputWrapper));
-  if (!ctx->input_wrapper) {
-    LOGE("Failed to allocate InputWrapper");
-    demux_context_free(ctx);
-    return 0L;
+
+  ctx->jni_helper = (JniCallbackHelper *)calloc(1, sizeof(JniCallbackHelper));
+  if (!ctx->jni_helper) {
+      LOGE("Failed to allocate JniCallbackHelper");
+      demux_context_free(ctx);
+      return 0L;
+  }
+  ctx->jni_helper->vm = g_vm;
+  ctx->jni_helper->ffmpeg_extractor_instance_global_ref = env->NewGlobalRef(thiz);
+  if (!ctx->jni_helper->ffmpeg_extractor_instance_global_ref) {
+      LOGE("Failed to create global ref for FfmpegExtractor instance");
+      demux_context_free(ctx);
+      return 0L;
   }
 
-  // Initialize input wrapper
-  if (input_wrapper_init(ctx->input_wrapper, env, inputData, inputLength) < 0) {
-    LOGE("Failed to initialize input wrapper");
-    demux_context_free(ctx);
-    return 0L;
+  jclass extractor_clazz = env->GetObjectClass(thiz);
+  if (!extractor_clazz) {
+      LOGE("Failed to get FfmpegExtractor class");
+      demux_context_free(ctx);
+      return 0L;
   }
 
-  unsigned char *avio_buffer = (unsigned char *) av_malloc(AVIO_BUFFER_SIZE);
-  if (!avio_buffer) {
-    LOGE("Failed to allocate AVIO buffer");
-    demux_context_free(ctx);
-    return 0L;
+  ctx->jni_helper->read_method_id = env->GetMethodID(extractor_clazz, "readFromExtractorInput", "([BII)I");
+  ctx->jni_helper->seek_method_id = env->GetMethodID(extractor_clazz, "seekInExtractorInput", "(JI)J");
+  ctx->jni_helper->get_length_method_id = env->GetMethodID(extractor_clazz, "getLengthFromExtractorInput", "()J");
+
+  if (!ctx->jni_helper->read_method_id || !ctx->jni_helper->seek_method_id || !ctx->jni_helper->get_length_method_id) {
+      LOGE("Failed to get JNI method IDs for FfmpegExtractor callbacks");
+      env->DeleteLocalRef(extractor_clazz);
+      demux_context_free(ctx);
+      return 0L;
+  }
+  env->DeleteLocalRef(extractor_clazz);
+
+  jbyteArray local_read_buffer = env->NewByteArray(AVIO_BUFFER_SIZE);
+  if (!local_read_buffer) {
+      LOGE("Failed to create local jbyteArray for read buffer");
+      demux_context_free(ctx);
+      return 0L;
+  }
+  ctx->jni_helper->read_buffer_global_ref = (jbyteArray)env->NewGlobalRef(local_read_buffer);
+  env->DeleteLocalRef(local_read_buffer);
+  if (!ctx->jni_helper->read_buffer_global_ref) {
+      LOGE("Failed to create global ref for read buffer");
+      demux_context_free(ctx);
+      return 0L;
   }
 
-  // Create AVIOContext
+
+  ctx->avio_internal_buffer = (uint8_t *)av_malloc(AVIO_BUFFER_SIZE);
+  if (!ctx->avio_internal_buffer) {
+      LOGE("Failed to allocate AVIO internal buffer");
+      demux_context_free(ctx);
+      return 0L;
+  }
+
   ctx->avio_ctx = avio_alloc_context(
-      avio_buffer,
+      ctx->avio_internal_buffer,
       AVIO_BUFFER_SIZE,
-      0, // write_flag (0 for read-only)
-      ctx,
+      0,
+      ctx->jni_helper,
       avio_read_packet_callback,
-      NULL, // write_packet
+      NULL,
       avio_seek_callback);
 
   if (!ctx->avio_ctx) {
-    LOGE("Failed to allocate AVIOContext");
-    av_free(avio_buffer);
-    demux_context_free(ctx);
-    return 0L;
+      LOGE("Failed to allocate AVIOContext");
+      demux_context_free(ctx);
+      return 0L;
   }
 
-  // Create format context
   ctx->format_ctx = avformat_alloc_context();
   if (!ctx->format_ctx) {
-    LOGE("Failed to allocate format context");
-    demux_context_free(ctx);
-    return 0L;
+      LOGE("Failed to allocate AVFormatContext");
+      demux_context_free(ctx);
+      return 0L;
   }
 
-  ctx->format_ctx->format_probesize = 64 * 1024; // 64KB
   ctx->format_ctx->pb = ctx->avio_ctx;
   ctx->format_ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
 
-  // Open input
-  LOGD("Opening input, skip_initial_bytes: %lld, format_probesize: %d",
-       ctx->format_ctx->skip_initial_bytes,
-       ctx->format_ctx->format_probesize);
-
   int ret = avformat_open_input(&ctx->format_ctx, NULL, NULL, NULL);
   if (ret < 0) {
-    log_error("avformat_open_input", ret);
-    demux_context_free(ctx);
-    return 0L;
+      log_error("avformat_open_input", ret);
+      demux_context_free(ctx);
+      return 0L;
   }
 
-  // Find stream info
-  LOGD("Finding stream info");
   ret = avformat_find_stream_info(ctx->format_ctx, NULL);
   if (ret < 0) {
-    log_error("avformat_find_stream_info", ret);
-    demux_context_free(ctx);
-    return 0L;
+      log_error("avformat_find_stream_info", ret);
+      demux_context_free(ctx);
+      return 0L;
   }
-  LOGD("Stream info found");
 
-  // Find first audio stream
   for (unsigned int i = 0; i < ctx->format_ctx->nb_streams; i++) {
-    if (ctx->format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-      ctx->audio_stream_index = (int) i;
-      ctx->audio_stream = ctx->format_ctx->streams[i];
-      break;
-    }
+      if (ctx->format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+          ctx->audio_stream_index = (int)i;
+          ctx->audio_stream = ctx->format_ctx->streams[i];
+          LOGD("Found audio stream at index %d", i);
+          LOGD("Audio codec: %s (ID: %d)", avcodec_get_name(ctx->audio_stream->codecpar->codec_id), ctx->audio_stream->codecpar->codec_id);
+          break;
+      }
   }
 
   if (ctx->audio_stream_index == -1) {
-    LOGE("No audio stream found");
-    demux_context_free(ctx);
-    return 0L;
+      LOGE("No audio stream found in input");
+      demux_context_free(ctx);
+      return 0L;
   }
-
-  LOGD("Audio stream index: %d", ctx->audio_stream_index);
-  LOGD("Audio codec: %s", avcodec_get_name(ctx->audio_stream->codecpar->codec_id));
-  LOGD("Sample rate: %d", ctx->audio_stream->codecpar->sample_rate);
-  LOGD("Channels: %d", ctx->audio_stream->codecpar->channels);
-  LOGD("Bit rate: %lld", (long long) ctx->audio_stream->codecpar->bit_rate);
-
-  return (jlong) ctx;
+  
+  LOGD("nativeCreateContext successful, context: %p", ctx);
+  return (jlong)ctx;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jint, nativeGetAudioCodecId, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1) {
-    return AV_CODEC_ID_NONE;
-  }
-
-  return (jint) ctx->audio_stream->codecpar->codec_id;
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->audio_stream) { // Check audio_stream as well
+  LOGE("nativeGetAudioCodecId: Invalid context or no audio stream");
+  return AV_CODEC_ID_NONE; // Or some other error indicator
+}
+return (jint) ctx->audio_stream->codecpar->codec_id;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jint, nativeGetSampleRate, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1) {
-    return -1;
-  }
-
-  return ctx->audio_stream->codecpar->sample_rate;
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->audio_stream) {
+   LOGE("nativeGetSampleRate: Invalid context or no audio stream");
+  return -1;
+}
+return ctx->audio_stream->codecpar->sample_rate;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jint, nativeGetChannelCount, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1) {
-    return -1;
-  }
-
-  return ctx->audio_stream->codecpar->channels;
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->audio_stream) {
+  LOGE("nativeGetChannelCount: Invalid context or no audio stream");
+  return -1;
+}
+return ctx->audio_stream->codecpar->channels;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jlong, nativeGetBitRate, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1) {
-    return -1;
-  }
-
-  return (jlong) ctx->audio_stream->codecpar->bit_rate;
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->audio_stream) {
+  LOGE("nativeGetBitRate: Invalid context or no audio stream");
+  return -1;
+}
+return (jlong) ctx->audio_stream->codecpar->bit_rate;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jint, nativeGetBlockAlign, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1) {
-    return -1;
-  }
-
-  return ctx->audio_stream->codecpar->block_align;
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->audio_stream) {
+  LOGE("nativeGetBlockAlign: Invalid context or no audio stream");
+  return -1;
+}
+return ctx->audio_stream->codecpar->block_align;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jbyteArray, nativeGetExtraData, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1) {
-    return NULL;
-  }
-
-  if (ctx->audio_stream->codecpar->extradata_size <= 0) {
-    return NULL;
-  }
-
-  jbyteArray extraData = env->NewByteArray(ctx->audio_stream->codecpar->extradata_size);
-  if (!extraData) {
-    return NULL;
-  }
-
-  env->SetByteArrayRegion(extraData,
-                          0, ctx->audio_stream->codecpar->extradata_size,
-                          (jbyte *) ctx->audio_stream->codecpar->extradata);
-
-  return extraData;
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->audio_stream || ctx->audio_stream->codecpar->extradata_size <= 0) {
+  return NULL;
+}
+jbyteArray extraData = env->NewByteArray(ctx->audio_stream->codecpar->extradata_size);
+if (!extraData) {
+  LOGE("nativeGetExtraData: Failed to allocate jbyteArray");
+  return NULL;
+}
+env->SetByteArrayRegion(extraData, 0, ctx->audio_stream->codecpar->extradata_size,
+                        (jbyte *)ctx->audio_stream->codecpar->extradata);
+return extraData;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jint, nativeReadPacket, jlong context, jbyteArray outputBuffer,
-                      jint outputBufferSize, jlongArray timestampOut) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || ctx->audio_stream_index == -1 || !outputBuffer) {
-    LOGE("Invalid parameters for nativeReadPacket");
-    return -1;
+                    jint outputBufferSize, jlongArray timestampOut) {
+  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)context;
+  if (!ctx || !ctx->format_ctx || ctx->audio_stream_index == -1 || !outputBuffer) {
+      LOGE("nativeReadPacket: Invalid parameters. Context: %p, FormatCtx: %p, StreamIndex: %d",
+           ctx, ctx ? ctx->format_ctx : NULL, ctx ? ctx->audio_stream_index : -2);
+      return AVERROR(EINVAL);
   }
 
   AVPacket packet;
-  av_init_packet(&packet);
+  av_packet_alloc();
+  if (!&packet) {
+      LOGE("nativeReadPacket: Failed to allocate AVPacket");
+      return AVERROR(ENOMEM);
+  }
+  packet.data = NULL;
+  packet.size = 0;
 
   int ret = av_read_frame(ctx->format_ctx, &packet);
   if (ret < 0) {
-    if (ret == AVERROR_EOF) {
-      LOGD("End of stream reached");
-    } else {
-      log_error("av_read_frame", ret);
-    }
-    av_packet_unref(&packet);
-    return ret;
+      if (ret != AVERROR_EOF) {
+          log_error("av_read_frame", ret);
+      } else {
+          LOGD("nativeReadPacket: av_read_frame returned EOF");
+      }
+      av_packet_unref(&packet);
+      return ret;
   }
 
-  // Check if this is an audio packet from our stream
   if (packet.stream_index != ctx->audio_stream_index) {
-    av_packet_unref(&packet);
-    return 0; // Skip non-audio packets
+      av_packet_unref(&packet);
+      return 0;
   }
 
   if (packet.size > outputBufferSize) {
-    LOGE("Packet size (%d) exceeds output buffer size (%d)", packet.size, outputBufferSize);
-    av_packet_unref(&packet);
-    return -1;
+      LOGE("nativeReadPacket: Packet size (%d) > outputBufferSize (%d)", packet.size, outputBufferSize);
+      av_packet_unref(&packet);
+      return AVERROR(EINVAL);
   }
 
-  // Extract timestamp and convert to microseconds
-  jlong timestampUs = -9223372036854775807LL; // C.TIME_UNSET equivalent
+  jlong timestampUs = C_TIME_UNSET;
   if (packet.pts != AV_NOPTS_VALUE) {
-    timestampUs = av_rescale_q(packet.pts, ctx->audio_stream->time_base, AV_TIME_BASE_Q);
+      timestampUs = av_rescale_q(packet.pts, ctx->audio_stream->time_base, AV_TIME_BASE_Q);
   } else if (packet.dts != AV_NOPTS_VALUE) {
-    timestampUs = av_rescale_q(packet.dts, ctx->audio_stream->time_base, AV_TIME_BASE_Q);
+      timestampUs = av_rescale_q(packet.dts, ctx->audio_stream->time_base, AV_TIME_BASE_Q);
   }
 
-  // Set timestamp output if array provided
-  if (timestampOut) {
-    env->SetLongArrayRegion(timestampOut, 0, 1, &timestampUs);
+  if (timestampOut != NULL) {
+      env->SetLongArrayRegion(timestampOut, 0, 1, ×tampUs);
   }
 
-  // Copy packet data to output buffer
-  env->SetByteArrayRegion(outputBuffer, 0, packet.size, (jbyte *) packet.data);
+  env->SetByteArrayRegion(outputBuffer, 0, packet.size, (jbyte *)packet.data);
+  if (env->ExceptionCheck()) {
+      LOGE("nativeReadPacket: Exception in SetByteArrayRegion");
+      env->ExceptionDescribe();
+      env->ExceptionClear();
+      av_packet_unref(&packet);
+      return AVERROR(EIO);
+  }
 
   int packet_size = packet.size;
   av_packet_unref(&packet);
-
   return packet_size;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jlong, nativeGetDuration, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx || !ctx->format_ctx) {
-    return -1;
-  }
+FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+if (!ctx || !ctx->format_ctx) {
+  LOGE("nativeGetDuration: Invalid context");
+  return -1;
+}
 
-  return ctx->format_ctx->duration;
+if (ctx->format_ctx->duration == AV_NOPTS_VALUE || ctx->format_ctx->duration <=0) {
+    return -1;
+}
+return ctx->format_ctx->duration;
 }
 
 FFMPEG_EXTRACTOR_FUNC(jboolean, nativeSeek, jlong context, jlong timeUs) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
+  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)context;
   if (!ctx || !ctx->format_ctx || ctx->audio_stream_index == -1) {
-    return JNI_FALSE;
+      LOGE("nativeSeek: Invalid context or no audio stream for seeking.");
+      return JNI_FALSE;
   }
 
-  // Convert microseconds to FFmpeg time base
-  int64_t timestamp = av_rescale_q(timeUs, AV_TIME_BASE_Q, ctx->audio_stream->time_base);
+  int64_t target_ts = av_rescale_q(timeUs, AV_TIME_BASE_Q, ctx->audio_stream->time_base);
+  LOGD("nativeSeek: Attempting to seek to timeUs=%lld, target_ts=%lld (stream_time_base %d/%d)",
+       timeUs, target_ts, ctx->audio_stream->time_base.num, ctx->audio_stream->time_base.den);
 
-  int ret = av_seek_frame(
-      ctx->format_ctx,
-      ctx->audio_stream_index,
-      timestamp,
-      AVSEEK_FLAG_BACKWARD);
+  int ret = av_seek_frame(ctx->format_ctx, ctx->audio_stream_index, target_ts, AVSEEK_FLAG_BACKWARD);
+
   if (ret < 0) {
-    log_error("av_seek_frame", ret);
-    return JNI_FALSE;
+      log_error("av_seek_frame", ret);
+      ret = av_seek_frame(ctx->format_ctx, ctx->audio_stream_index, target_ts, AVSEEK_FLAG_ANY);
+      if (ret < 0) {
+          log_error("av_seek_frame (AVSEEK_FLAG_ANY)", ret);
+          return JNI_FALSE;
+      }
+      LOGD("nativeSeek: av_seek_frame (AVSEEK_FLAG_ANY) successful.");
+  } else {
+      LOGD("nativeSeek: av_seek_frame (AVSEEK_FLAG_BACKWARD) successful.");
   }
 
-  LOGD("nativeSeek: seek to %lld us successful", (long long) timeUs);
   return JNI_TRUE;
 }
 
 FFMPEG_EXTRACTOR_FUNC(void, nativeReleaseContext, jlong context) {
-  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *) context;
-  if (!ctx) {
-    return;
+  FfmpegDemuxContext *ctx = (FfmpegDemuxContext *)context;
+  LOGD("nativeReleaseContext called with context: %p", ctx);
+  if (ctx) {
+      demux_context_free(ctx);
   }
-  demux_context_free(ctx);
 }
