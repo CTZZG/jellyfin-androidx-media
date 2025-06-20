@@ -66,16 +66,6 @@ static JavaVM *g_vm = NULL;
 // ExoPlayer's C.TIME_UNSET value
 const int64_t EXO_C_TIME_UNSET = -9223372036854775807LL;
 
-JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
-    g_vm = vm;
-    JNIEnv *env;
-    if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        return JNI_ERR;
-    }
-    LOGD("ffmpeg_extractor_jni JNI_OnLoad successful");
-    return JNI_VERSION_1_6;
-}
-
 void log_error(const char *func_name, int error_no) {
     char buffer[AV_ERROR_MAX_STRING_SIZE];
     av_strerror(error_no, buffer, sizeof(buffer));
