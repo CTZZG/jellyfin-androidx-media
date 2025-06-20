@@ -82,7 +82,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>JPEG ({@link JpegExtractor})
  *   <li>MIDI, if available, the MIDI extension's {@code
  *       com.google.android.exoplayer2.decoder.midi.MidiExtractor} is used.
- *   <li>WMA ({@code com.google.android.exoplayer2.ext.ffmpeg.FfmpegExtractor})}
+ *   <li>WMA and DSF (DSD), if available, the FFmpeg extension's {@code
+ *       com.google.android.exoplayer2.ext.ffmpeg.FfmpegExtractor} is used.
  * </ul>
  *
  * @deprecated com.google.android.exoplayer2 is deprecated. Please migrate to androidx.media3 (which
@@ -97,6 +98,7 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
   // https://docs.google.com/document/d/1w2mKaWMxfz2Ei8-LdxqbPs1VLe_oudB-eryXXw9OvQQ.
   // The JPEG extractor appears after audio/video extractors because we expect audio/video input to
   // be more common.
+  // WMA and DSF (via FFmpeg) are added at the end as they are extension-based.
   private static final int[] DEFAULT_EXTRACTOR_ORDER =
       new int[] {
         FileTypes.FLV,
@@ -117,8 +119,8 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
         FileTypes.AVI,
         FileTypes.MIDI,
         FileTypes.JPEG,
-        FileTypes.WMA,
-        FileTypes.DSF
+        FileTypes.WMA, // Handled by FFmpeg extension loader
+        FileTypes.DSF  // Handled by FFmpeg extension loader
       };
 
   private static final ExtensionLoader FLAC_EXTENSION_LOADER =
@@ -468,14 +470,14 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
       case FileTypes.AVI:
         extractors.add(new AviExtractor());
         break;
-      case FileTypes.WMA:
+      case FileTypes.WMA: // Intentional fall-through to share FFmpeg loader
       case FileTypes.DSF:
         @Nullable Extractor ffmpegExtractor = FFMPEG_EXTENSION_LOADER.getExtractor();
         if (ffmpegExtractor != null) {
           extractors.add(ffmpegExtractor);
         }
         break;
-      case FileTypes.WEBVTT:
+      case FileTypes.WEBVTT: // WebVTT is handled by text renderers, not typically via an Extractor here.
       case FileTypes.UNKNOWN:
       default:
         break;
@@ -495,7 +497,15 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
           NoSuchMethodException,
           InvocationTargetException,
           IllegalAccessException {
-    @SuppressWarnings("nullness:argument")
+    // Check if the FlacLibrary class itself exists first to avoid NoClassDefFoundError
+    // if the extension is not present at all.
+    try {
+        Class.forName("com.google.android.exoplayer2.ext.flac.FlacLibrary");
+    } catch (ClassNotFoundException e) {
+        return null; // FLAC extension not present
+    }
+
+    @SuppressWarnings("nullness:argument") // isAvailable is static, obj is null
     boolean isFlacNativeLibraryAvailable =
         Boolean.TRUE.equals(
             Class.forName("com.google.android.exoplayer2.ext.flac.FlacLibrary")
@@ -509,11 +519,34 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
     return null;
   }
 
+  @Nullable
   private static Constructor<? extends Extractor> getFfmpegExtractorConstructor()
       throws ClassNotFoundException, NoSuchMethodException {
-    return Class.forName("com.google.android.exoplayer2.ext.ffmpeg.FfmpegExtractor")
-        .asSubclass(Extractor.class)
-        .getConstructor();
+    // Check if the FfmpegLibrary class itself exists first
+    try {
+        Class.forName("com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary");
+    } catch (ClassNotFoundException e) {
+        return null; // FFmpeg extension not present
+    }
+    // Check if FfmpegLibrary is available (loads JNI)
+     boolean isFfmpegAvailable = false;
+     try {
+        isFfmpegAvailable = Boolean.TRUE.equals(
+            Class.forName("com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary")
+                .getMethod("isAvailable")
+                .invoke(null));
+     } catch (Exception e) {
+        // Could be ClassNotFoundException, NoSuchMethodException, IllegalAccessException, InvocationTargetException
+        // If any of these occur, treat as not available.
+        return null;
+     }
+
+    if (isFfmpegAvailable) {
+        return Class.forName("com.google.android.exoplayer2.ext.ffmpeg.FfmpegExtractor")
+            .asSubclass(Extractor.class)
+            .getConstructor();
+    }
+    return null;
   }
 
   private static final class ExtensionLoader {
@@ -528,48 +561,47 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
     }
 
     private final ConstructorSupplier constructorSupplier;
-    private final AtomicBoolean extensionLoaded;
-
-    @GuardedBy("extensionLoaded")
+    private final AtomicBoolean extensionLoadedStateKnown; // true if we've tried to load
+    
+    @GuardedBy("this") // Synchronize access to extractorConstructor
     @Nullable
     private Constructor<? extends Extractor> extractorConstructor;
 
     public ExtensionLoader(ConstructorSupplier constructorSupplier) {
       this.constructorSupplier = constructorSupplier;
-      extensionLoaded = new AtomicBoolean(false);
+      this.extensionLoadedStateKnown = new AtomicBoolean(false);
     }
 
     @Nullable
     public Extractor getExtractor(Object... constructorParams) {
       @Nullable
-      Constructor<? extends Extractor> extractorConstructor = maybeLoadExtractorConstructor();
-      if (extractorConstructor == null) {
+      Constructor<? extends Extractor> constructor = maybeLoadExtractorConstructor();
+      if (constructor == null) {
         return null;
       }
       try {
-        return extractorConstructor.newInstance(constructorParams);
+        return constructor.newInstance(constructorParams);
       } catch (Exception e) {
         throw new IllegalStateException("Unexpected error creating extractor", e);
       }
     }
 
     @Nullable
-    private Constructor<? extends Extractor> maybeLoadExtractorConstructor() {
-      synchronized (extensionLoaded) {
-        if (extensionLoaded.get()) {
-          return extractorConstructor;
-        }
-        try {
-          return constructorSupplier.getConstructor();
-        } catch (ClassNotFoundException e) {
-          // Expected if the app was built without the extension.
-        } catch (Exception e) {
-          // The extension is present, but instantiation failed.
-          throw new RuntimeException("Error instantiating extension", e);
-        }
-        extensionLoaded.set(true);
+    private synchronized Constructor<? extends Extractor> maybeLoadExtractorConstructor() {
+      if (extensionLoadedStateKnown.get()) {
         return extractorConstructor;
       }
+      try {
+        extractorConstructor = constructorSupplier.getConstructor();
+      } catch (ClassNotFoundException e) {
+        // Expected if the app was built without the extension.
+        // extractorConstructor remains null.
+      } catch (Exception e) {
+        // The extension is present, but instantiation failed.
+        throw new RuntimeException("Error querying/instantiating extension", e);
+      }
+      extensionLoadedStateKnown.set(true);
+      return extractorConstructor;
     }
   }
 }

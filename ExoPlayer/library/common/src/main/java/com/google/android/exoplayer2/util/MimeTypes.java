@@ -104,8 +104,21 @@ public final class MimeTypes {
   public static final String AUDIO_WAV = BASE_TYPE_AUDIO + "/wav";
   public static final String AUDIO_MIDI = BASE_TYPE_AUDIO + "/midi";
   public static final String AUDIO_WMA = BASE_TYPE_AUDIO + "/x-ms-wma";
+
+  /** Generic DSD MIME type, often implies MSB, non-planar. */
   public static final String AUDIO_DSD = BASE_TYPE_AUDIO + "/x-dsd";
-  public static final String AUDIO_DSF = BASE_TYPE_AUDIO + "/x-dsf";
+  /** DSF (DSD Storage Format) files, typically DSD64. Often used as a general DSD container type. */
+  public static final String AUDIO_DSF = BASE_TYPE_AUDIO + "/x-dsf"; // IANA registered: audio/dsf
+  /** DSD with Least Significant Bit first. */
+  public static final String AUDIO_DSD_LSBF = BASE_TYPE_AUDIO + "/x-dsd-lsbf";
+  /** DSD with Most Significant Bit first (often the default for generic AUDIO_DSD). */
+  public static final String AUDIO_DSD_MSBF = BASE_TYPE_AUDIO + "/x-dsd-msbf";
+  /** DSD with Least Significant Bit first, planar. */
+  public static final String AUDIO_DSD_LSBF_PLANAR = BASE_TYPE_AUDIO + "/x-dsd-lsbf-planar";
+  /** DSD with Most Significant Bit first, planar. */
+  public static final String AUDIO_DSD_MSBF_PLANAR = BASE_TYPE_AUDIO + "/x-dsd-msbf-planar";
+  // public static final String AUDIO_DFF = BASE_TYPE_AUDIO + "/x-dff"; // For DSD Interchange File Format if needed
+
 
   public static final String AUDIO_EXOPLAYER_MIDI = BASE_TYPE_AUDIO + "/x-exoplayer-midi";
 
@@ -264,6 +277,13 @@ public final class MimeTypes {
       case AUDIO_AC3:
       case AUDIO_E_AC3:
       case AUDIO_E_AC3_JOC:
+      // DSD samples are typically individual bitstream frames, effectively sync samples.
+      case AUDIO_DSD:
+      case AUDIO_DSF:
+      case AUDIO_DSD_LSBF:
+      case AUDIO_DSD_MSBF:
+      case AUDIO_DSD_LSBF_PLANAR:
+      case AUDIO_DSD_MSBF_PLANAR:
         return true;
       case AUDIO_AAC:
         if (codec == null) {
@@ -461,6 +481,11 @@ public final class MimeTypes {
       return MimeTypes.APPLICATION_CEA708;
     } else if (codec.contains("eia608") || codec.contains("cea608")) {
       return MimeTypes.APPLICATION_CEA608;
+    } else if (codec.startsWith("dsd") || codec.startsWith("dsf")) { // General DSD codec prefixes
+        // This is a simplification; specific DSD codec strings are not standardized like mp4a.
+        // We rely on FfmpegExtractor to get specific codec IDs for DSD.
+        // For getMediaMimeType, we can return a generic DSD type.
+        return MimeTypes.AUDIO_DSD;
     } else {
       return getCustomMimeTypeForCodec(codec);
     }
@@ -586,14 +611,24 @@ public final class MimeTypes {
         return C.ENCODING_DTS;
       case MimeTypes.AUDIO_DTS_HD:
         return C.ENCODING_DTS_HD;
-      case MimeTypes.AUDIO_DTS_EXPRESS:
+      case MimeTypes.AUDIO_DTS_EXPRESS: // DTS Express is a profile of DTS-HD
         return C.ENCODING_DTS_HD;
-      case MimeTypes.AUDIO_DTS_X:
+      case MimeTypes.AUDIO_DTS_X: // Profile P2 for DTS:X Ultra HD
         return C.ENCODING_DTS_UHD_P2;
       case MimeTypes.AUDIO_TRUEHD:
         return C.ENCODING_DOLBY_TRUEHD;
       case MimeTypes.AUDIO_OPUS:
         return C.ENCODING_OPUS;
+      // DSD encodings are typically PCM after decoding by FFmpeg.
+      // The @C.PcmEncoding is handled by FfmpegAudioDecoder based on outputFloat.
+      // So, no specific @C.Encoding for DSD source types here.
+      case MimeTypes.AUDIO_DSD:
+      case MimeTypes.AUDIO_DSF:
+      case MimeTypes.AUDIO_DSD_LSBF:
+      case MimeTypes.AUDIO_DSD_MSBF:
+      case MimeTypes.AUDIO_DSD_LSBF_PLANAR:
+      case MimeTypes.AUDIO_DSD_MSBF_PLANAR:
+        return C.ENCODING_PCM_16BIT; // Placeholder, actual PCM encoding determined by decoder output
       default:
         return C.ENCODING_INVALID;
     }
@@ -624,6 +659,12 @@ public final class MimeTypes {
         return AUDIO_MPEG;
       case BASE_TYPE_AUDIO + "/x-wav":
         return AUDIO_WAV;
+      // IANA official MIME type for DSF files is audio/dsf
+      // https://www.iana.org/assignments/media-types/audio/dsf
+      // Our internal MimeTypes.AUDIO_DSF is audio/x-dsf. We can normalize to that or official.
+      // For consistency with existing x- convention, let's keep it, or normalize audio/dsf to audio/x-dsf.
+      case "audio/dsf": // Official IANA
+          return AUDIO_DSF; // Normalize to our internal constant
       default:
         return mimeType;
     }
@@ -741,19 +782,29 @@ public final class MimeTypes {
     public @C.Encoding int getEncoding() {
       // See AUDIO_OBJECT_TYPE_AAC_* constants in AacUtil.
       switch (audioObjectTypeIndication) {
-        case 2:
+        case 2: // AAC LC
           return C.ENCODING_AAC_LC;
-        case 5:
+        case 5: // SBR (HE-AACv1)
           return C.ENCODING_AAC_HE_V1;
-        case 29:
+        case 29: // PS (HE-AACv2)
           return C.ENCODING_AAC_HE_V2;
-        case 42:
+        case 42: // xHE-AAC
           return C.ENCODING_AAC_XHE;
-        case 23:
+        case 23: // AAC ELD
           return C.ENCODING_AAC_ELD;
-        case 22:
+        case 22: // ER AAC BSAC (deprecated by MPEG?)
           return C.ENCODING_AAC_ER_BSAC;
+        // Other AAC object types could be mapped here if needed.
+        // E.g., 1 = AAC Main, 3 = AAC SSR, 4 = AAC LTP
         default:
+          // If audioObjectTypeIndication is 0 or unmapped, rely on objectTypeIndication.
+          // For mp4a.40 (OTI for AAC), audio OTI might be absent or 0.
+          if (objectTypeIndication == 0x40) { // General AAC
+             // If no specific audio OTI, assume LC as a common default.
+             // Or return ENCODING_AAC if that's a generic AAC type.
+             // For now, if specific audio OTI is missing/unhandled, treat as invalid for precise encoding.
+             return C.ENCODING_AAC_LC; // Fallback for mp4a.40 without specific audio OTI
+          }
           return C.ENCODING_INVALID;
       }
     }

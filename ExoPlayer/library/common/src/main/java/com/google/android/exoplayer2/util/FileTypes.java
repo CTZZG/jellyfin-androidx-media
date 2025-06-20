@@ -43,14 +43,15 @@ public final class FileTypes {
   /**
    * File types. One of {@link #UNKNOWN}, {@link #AC3}, {@link #AC4}, {@link #ADTS}, {@link #AMR},
    * {@link #FLAC}, {@link #FLV}, {@link #MATROSKA}, {@link #MP3}, {@link #MP4}, {@link #OGG},
-   * {@link #PS}, {@link #TS}, {@link #WAV}, {@link #WEBVTT}, {@link #JPEG} and {@link #MIDI}.
+   * {@link #PS}, {@link #TS}, {@link #WAV}, {@link #WEBVTT}, {@link #JPEG}, {@link #MIDI},
+   * {@link #AVI}, {@link #WMA}, {@link #DSF}.
    */
   @Documented
   @Retention(RetentionPolicy.SOURCE)
   @Target(TYPE_USE)
   @IntDef({
     UNKNOWN, AC3, AC4, ADTS, AMR, FLAC, FLV, MATROSKA, MP3, MP4, OGG, PS, TS, WAV, WEBVTT, JPEG,
-    MIDI, AVI, WMA
+    MIDI, AVI, WMA, DSF
   })
   public @interface Type {}
   /** Unknown file type. */
@@ -91,7 +92,7 @@ public final class FileTypes {
   public static final int AVI = 16;
   /** File type for the WMA format. */
   public static final int WMA = 17;
-  /** File type for the DSD format. */
+  /** File type for the DSD Storage Format (DSF), also used generally for DSD. */
   public static final int DSF = 18;
 
   @VisibleForTesting /* package */ static final String HEADER_CONTENT_TYPE = "Content-Type";
@@ -131,6 +132,7 @@ public final class FileTypes {
   private static final String EXTENSION_AVI = ".avi";
   private static final String EXTENSION_WMA = ".wma";
   private static final String EXTENSION_DSF = ".dsf";
+  private static final String EXTENSION_DFF = ".dff"; // DSD Interchange File Format
 
   private FileTypes() {}
 
@@ -198,9 +200,14 @@ public final class FileTypes {
         return FileTypes.AVI;
       case MimeTypes.AUDIO_WMA:
         return FileTypes.WMA;
-      case MimeTypes.AUDIO_DSF:
       case MimeTypes.AUDIO_DSD:
-      return FileTypes.DSF;
+      case MimeTypes.AUDIO_DSF: // Official IANA for .dsf files
+      case MimeTypes.AUDIO_DSD_LSBF:
+      case MimeTypes.AUDIO_DSD_MSBF:
+      case MimeTypes.AUDIO_DSD_LSBF_PLANAR:
+      case MimeTypes.AUDIO_DSD_MSBF_PLANAR:
+      // case MimeTypes.AUDIO_DFF: // If we add a MimeType for DFF
+        return FileTypes.DSF; // Use DSF as the generic type for DSD formats
       default:
         return FileTypes.UNKNOWN;
     }
@@ -211,66 +218,69 @@ public final class FileTypes {
     @Nullable String filename = uri.getLastPathSegment();
     if (filename == null) {
       return FileTypes.UNKNOWN;
-    } else if (filename.endsWith(EXTENSION_AC3) || filename.endsWith(EXTENSION_EC3)) {
+    }
+    // Use toLowerCase for extension matching for robustness
+    String lowerCaseFilename = Util.toLowerInvariant(filename);
+    if (lowerCaseFilename.endsWith(EXTENSION_AC3) || lowerCaseFilename.endsWith(EXTENSION_EC3)) {
       return FileTypes.AC3;
-    } else if (filename.endsWith(EXTENSION_AC4)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_AC4)) {
       return FileTypes.AC4;
-    } else if (filename.endsWith(EXTENSION_ADTS) || filename.endsWith(EXTENSION_AAC)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_ADTS) || lowerCaseFilename.endsWith(EXTENSION_AAC)) {
       return FileTypes.ADTS;
-    } else if (filename.endsWith(EXTENSION_AMR)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_AMR)) {
       return FileTypes.AMR;
-    } else if (filename.endsWith(EXTENSION_FLAC)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_FLAC)) {
       return FileTypes.FLAC;
-    } else if (filename.endsWith(EXTENSION_FLV)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_FLV)) {
       return FileTypes.FLV;
-    } else if (filename.endsWith(EXTENSION_MID)
-        || filename.endsWith(EXTENSION_MIDI)
-        || filename.endsWith(EXTENSION_SMF)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_MID)
+        || lowerCaseFilename.endsWith(EXTENSION_MIDI)
+        || lowerCaseFilename.endsWith(EXTENSION_SMF)) {
       return FileTypes.MIDI;
-    } else if (filename.startsWith(
+    } else if (lowerCaseFilename.startsWith(
             EXTENSION_PREFIX_MK,
-            /* toffset= */ filename.length() - (EXTENSION_PREFIX_MK.length() + 1))
-        || filename.endsWith(EXTENSION_WEBM)) {
+            /* toffset= */ lowerCaseFilename.length() - (EXTENSION_PREFIX_MK.length() + 1))
+        || lowerCaseFilename.endsWith(EXTENSION_WEBM)) {
       return FileTypes.MATROSKA;
-    } else if (filename.endsWith(EXTENSION_MP3)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_MP3)) {
       return FileTypes.MP3;
-    } else if (filename.endsWith(EXTENSION_MP4)
-        || filename.startsWith(
+    } else if (lowerCaseFilename.endsWith(EXTENSION_MP4)
+        || lowerCaseFilename.startsWith(
             EXTENSION_PREFIX_M4,
-            /* toffset= */ filename.length() - (EXTENSION_PREFIX_M4.length() + 1))
-        || filename.startsWith(
+            /* toffset= */ lowerCaseFilename.length() - (EXTENSION_PREFIX_M4.length() + 1))
+        || lowerCaseFilename.startsWith(
             EXTENSION_PREFIX_MP4,
-            /* toffset= */ filename.length() - (EXTENSION_PREFIX_MP4.length() + 1))
-        || filename.startsWith(
+            /* toffset= */ lowerCaseFilename.length() - (EXTENSION_PREFIX_MP4.length() + 1))
+        || lowerCaseFilename.startsWith(
             EXTENSION_PREFIX_CMF,
-            /* toffset= */ filename.length() - (EXTENSION_PREFIX_CMF.length() + 1))) {
+            /* toffset= */ lowerCaseFilename.length() - (EXTENSION_PREFIX_CMF.length() + 1))) {
       return FileTypes.MP4;
-    } else if (filename.startsWith(
+    } else if (lowerCaseFilename.startsWith(
             EXTENSION_PREFIX_OG,
-            /* toffset= */ filename.length() - (EXTENSION_PREFIX_OG.length() + 1))
-        || filename.endsWith(EXTENSION_OPUS)) {
+            /* toffset= */ lowerCaseFilename.length() - (EXTENSION_PREFIX_OG.length() + 1))
+        || lowerCaseFilename.endsWith(EXTENSION_OPUS)) {
       return FileTypes.OGG;
-    } else if (filename.endsWith(EXTENSION_PS)
-        || filename.endsWith(EXTENSION_MPEG)
-        || filename.endsWith(EXTENSION_MPG)
-        || filename.endsWith(EXTENSION_M2P)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_PS)
+        || lowerCaseFilename.endsWith(EXTENSION_MPEG)
+        || lowerCaseFilename.endsWith(EXTENSION_MPG)
+        || lowerCaseFilename.endsWith(EXTENSION_M2P)) {
       return FileTypes.PS;
-    } else if (filename.endsWith(EXTENSION_TS)
-        || filename.startsWith(
+    } else if (lowerCaseFilename.endsWith(EXTENSION_TS)
+        || lowerCaseFilename.startsWith(
             EXTENSION_PREFIX_TS,
-            /* toffset= */ filename.length() - (EXTENSION_PREFIX_TS.length() + 1))) {
+            /* toffset= */ lowerCaseFilename.length() - (EXTENSION_PREFIX_TS.length() + 1))) {
       return FileTypes.TS;
-    } else if (filename.endsWith(EXTENSION_WAV) || filename.endsWith(EXTENSION_WAVE)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_WAV) || lowerCaseFilename.endsWith(EXTENSION_WAVE)) {
       return FileTypes.WAV;
-    } else if (filename.endsWith(EXTENSION_VTT) || filename.endsWith(EXTENSION_WEBVTT)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_VTT) || lowerCaseFilename.endsWith(EXTENSION_WEBVTT)) {
       return FileTypes.WEBVTT;
-    } else if (filename.endsWith(EXTENSION_JPG) || filename.endsWith(EXTENSION_JPEG)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_JPG) || lowerCaseFilename.endsWith(EXTENSION_JPEG)) {
       return FileTypes.JPEG;
-    } else if (filename.endsWith(EXTENSION_AVI)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_AVI)) {
       return FileTypes.AVI;
-    } else if (filename.endsWith(EXTENSION_WMA)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_WMA)) {
       return FileTypes.WMA;
-    } else if (filename.toLowerCase().endsWith(EXTENSION_DSF)) {
+    } else if (lowerCaseFilename.endsWith(EXTENSION_DSF) || lowerCaseFilename.endsWith(EXTENSION_DFF)) {
       return FileTypes.DSF;
     } else {
       return FileTypes.UNKNOWN;

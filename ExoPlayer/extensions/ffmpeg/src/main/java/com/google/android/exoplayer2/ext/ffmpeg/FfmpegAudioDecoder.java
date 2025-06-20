@@ -187,6 +187,14 @@ import java.util.List;
         return getVorbisExtraData(initializationData);
       case MimeTypes.AUDIO_WMA:
         return getWmaExtraData(initializationData);
+      // For DSD variants, extraData is usually not required by FFmpeg decoders if format parameters are set.
+      // If specific DSD variants needed extradata, cases would be added here.
+      case MimeTypes.AUDIO_DSD:
+      case MimeTypes.AUDIO_DSD_LSBF:
+      case MimeTypes.AUDIO_DSD_MSBF:
+      case MimeTypes.AUDIO_DSD_LSBF_PLANAR:
+      case MimeTypes.AUDIO_DSD_MSBF_PLANAR:
+        return initializationData.isEmpty() ? null : initializationData.get(0); // Optional extradata
       default:
         // Other codecs do not require extra data.
         return null;
@@ -229,7 +237,6 @@ import java.util.List;
     if (initializationData.isEmpty()) {
       return null;
     }
-    
     // Return the codec private data directly
     return initializationData.get(0);
   }
@@ -243,6 +250,7 @@ import java.util.List;
       return Format.NO_VALUE;
     }
 
+    // The second element in initializationData for WMA is expected to be the blockAlign bytes.
     byte[] blob = initializationData.get(1);
     if (blob == null || blob.length < 2) {
       return Format.NO_VALUE;

@@ -137,7 +137,7 @@ public final class FfmpegLibrary {
         return "truehd";
       case MimeTypes.AUDIO_DTS:
       case MimeTypes.AUDIO_DTS_HD:
-        return "dca";
+        return "dca"; // FFmpeg uses "dca" for DTS Coherent Acoustics
       case MimeTypes.AUDIO_VORBIS:
         return "vorbis";
       case MimeTypes.AUDIO_OPUS:
@@ -155,13 +155,46 @@ public final class FfmpegLibrary {
       case MimeTypes.AUDIO_ALAW:
         return "pcm_alaw";
       case MimeTypes.AUDIO_WMA:
-        return "wmav2";
-      case MimeTypes.AUDIO_DSD:
+        return "wmav2"; // Default to WMAv2, could be wmav1, wmapro etc.
+                        // FfmpegAudioDecoder constructor passes specific WMA params.
+      case MimeTypes.AUDIO_DSD: // Generic DSD, default to msbf as before
         return "dsd_msbf";
+      case MimeTypes.AUDIO_DSD_MSBF:
+        return "dsd_msbf";
+      case MimeTypes.AUDIO_DSD_LSBF:
+        return "dsd_lsbf";
+      case MimeTypes.AUDIO_DSD_MSBF_PLANAR:
+        return "dsd_msbf_planar";
+      case MimeTypes.AUDIO_DSD_LSBF_PLANAR:
+        return "dsd_lsbf_planar";
       default:
         return null;
     }
   }
+
+   /**
+   * Returns the FFmpeg codec name for a given FFmpeg codec ID.
+   * This is used by FfmpegExtractor as a fallback for unknown DSD variants.
+   */
+  @Nullable
+  /* package */ static String getCodecNameForFFmpegId(int ffmpegCodecId) {
+    // This is a simplified mapping. A more complete one would query FFmpeg.
+    // Based on AV_CODEC_ID_* constants used in FfmpegExtractor
+    switch (ffmpegCodecId) {
+        // From FfmpegExtractor
+        case 0x15000 + 7: /* AV_CODEC_ID_WMAV1 */ return "wmav1";
+        case 0x15000 + 8: /* AV_CODEC_ID_WMAV2 */ return "wmav2";
+        case 88069: /* AV_CODEC_ID_DSD_LSBF */ return "dsd_lsbf";
+        case 88070: /* AV_CODEC_ID_DSD_MSBF */ return "dsd_msbf";
+        case 88071: /* AV_CODEC_ID_DSD_LSBF_PLANAR */ return "dsd_lsbf_planar";
+        case 88072: /* AV_CODEC_ID_DSD_MSBF_PLANAR */ return "dsd_msbf_planar";
+        default:
+            // This would ideally call a native method like avcodec_get_name(ffmpegCodecId)
+            // For now, return null if not explicitly mapped.
+            return null;
+    }
+  }
+
 
   private static native String ffmpegGetVersion();
 
