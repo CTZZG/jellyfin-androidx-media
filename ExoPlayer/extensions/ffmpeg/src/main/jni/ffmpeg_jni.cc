@@ -345,8 +345,6 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
     int channelLayout = context->channel_layout;
     int sampleRate = context->sample_rate;
     int sampleCount = frame->nb_samples;
-    int dataSize = av_samples_get_buffer_size(NULL, channelCount, sampleCount,
-                                              sampleFormat, 1);
     SwrContext *resampleContext;
     if (context->opaque) {
       resampleContext = (SwrContext *)context->opaque;
@@ -376,7 +374,6 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
       }
       context->opaque = resampleContext;
     }
-    int inSampleSize = av_get_bytes_per_sample(sampleFormat);
     int outSampleSize = av_get_bytes_per_sample(context->request_sample_fmt);
     int outSamples = swr_get_out_samples(resampleContext, sampleCount);
     int bufferOutSize = outSampleSize * channelCount * outSamples;
@@ -386,7 +383,7 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
       av_frame_free(&frame);
       return AUDIO_DECODER_ERROR_INVALID_DATA;
     }
-    result = swr_convert(resampleContext, &outputBuffer, bufferOutSize,
+    result = swr_convert(resampleContext, &outputBuffer, outSamples,
                          (const uint8_t **)frame->data, frame->nb_samples);
     av_frame_free(&frame);
     if (result < 0) {

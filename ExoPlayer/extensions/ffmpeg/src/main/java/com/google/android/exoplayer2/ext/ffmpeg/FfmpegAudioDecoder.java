@@ -133,15 +133,27 @@ import java.util.List;
     }
     if (!hasOutputFormat) {
       channelCount = ffmpegGetChannelCount(nativeContext);
-      sampleRate = ffmpegGetSampleRate(nativeContext);
-      if (sampleRate == 0 && "alac".equals(codecName)) {
+      int inputSampleRate = ffmpegGetSampleRate(nativeContext);
+      if (inputSampleRate == 0 && "alac".equals(codecName)) {
         Assertions.checkNotNull(extraData);
         // ALAC decoder did not set the sample rate in earlier versions of FFmpeg. See
         // https://trac.ffmpeg.org/ticket/6096.
         ParsableByteArray parsableExtraData = new ParsableByteArray(extraData);
         parsableExtraData.setPosition(extraData.length - 4);
-        sampleRate = parsableExtraData.readUnsignedIntToInt();
+        inputSampleRate = parsableExtraData.readUnsignedIntToInt();
       }
+
+      final int resampleToRate = 48000;
+      int outputSampleRate = (inputSampleRate > resampleToRate) ? resampleToRate : inputSampleRate;
+
+      this.sampleRate = outputSampleRate;
+
+      outputBuffer.format = new Format.Builder()
+        .setSampleMimeType(MimeTypes.AUDIO_RAW)
+        .setChannelCount(channelCount)
+        .setSampleRate(outputSampleRate)
+        .setPcmEncoding(encoding)
+        .build();
       hasOutputFormat = true;
     }
     outputData.position(0);
