@@ -352,10 +352,18 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
       resampleContext = (SwrContext *)context->opaque;
     } else {
       resampleContext = swr_alloc();
+
+      const int TARGET_SAMPLE_RATE = 48000;
+      int outSampleRate = sampleRate;
+      
+      if (sampleRate > TARGET_SAMPLE_RATE) {
+        outSampleRate = TARGET_SAMPLE_RATE;
+      }
+
       av_opt_set_int(resampleContext, "in_channel_layout", channelLayout, 0);
       av_opt_set_int(resampleContext, "out_channel_layout", channelLayout, 0);
       av_opt_set_int(resampleContext, "in_sample_rate", sampleRate, 0);
-      av_opt_set_int(resampleContext, "out_sample_rate", sampleRate, 0);
+      av_opt_set_int(resampleContext, "out_sample_rate", outSampleRate, 0);
       av_opt_set_int(resampleContext, "in_sample_fmt", sampleFormat, 0);
       // The output format is always the requested format.
       av_opt_set_int(resampleContext, "out_sample_fmt",
