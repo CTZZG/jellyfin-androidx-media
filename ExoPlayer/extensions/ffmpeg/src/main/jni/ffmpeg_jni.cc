@@ -402,7 +402,6 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
     // outputBuffer += bufferOutSize;
     // outSize += bufferOutSize;
     
-    int outSampleSize = av_get_bytes_per_sample(context->request_sample_fmt);
     int bytesWritten = result * channelCount * outSampleSize;
     outputBuffer += bytesWritten;
     outSize += bytesWritten;
