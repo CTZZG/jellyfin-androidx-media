@@ -54,6 +54,7 @@ import java.util.List;
 
   private long nativeContext; // May be reassigned on resetting the codec.
   private boolean hasOutputFormat;
+  @Nullable private Format outputFormat;
   private volatile int channelCount;
   private volatile int sampleRate;
 
@@ -85,6 +86,11 @@ import java.util.List;
   @Override
   public String getName() {
     return "ffmpeg" + FfmpegLibrary.getVersion() + "-" + codecName;
+  }
+
+@Override
+  public Format getOutputFormat() {
+    return outputFormat;
   }
 
   @Override
@@ -148,12 +154,15 @@ import java.util.List;
 
       this.sampleRate = outputSampleRate;
 
-      outputBuffer.format = new Format.Builder()
+      this.outputFormat = new Format.Builder()
         .setSampleMimeType(MimeTypes.AUDIO_RAW)
         .setChannelCount(channelCount)
         .setSampleRate(outputSampleRate)
         .setPcmEncoding(encoding)
         .build();
+
+      outputBuffer.addFlag(C.BUFFER_FLAG_FORMAT_CHANGED);
+
       hasOutputFormat = true;
     }
     outputData.position(0);
