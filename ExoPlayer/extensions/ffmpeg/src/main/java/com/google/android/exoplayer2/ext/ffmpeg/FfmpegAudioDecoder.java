@@ -74,10 +74,19 @@ import java.util.List;
     encoding = outputFloat ? C.ENCODING_PCM_FLOAT : C.ENCODING_PCM_16BIT;
     outputBufferSize = outputFloat ? OUTPUT_BUFFER_SIZE_32BIT : OUTPUT_BUFFER_SIZE_16BIT;
     int blockAlign = getBlockAlign(format.sampleMimeType, format.initializationData);
-
-    final int resampleToRate = 48000;
+    
     int inputSampleRate = format.sampleRate;
-    int outputSampleRate = (inputSampleRate > resampleToRate) ? resampleToRate : inputSampleRate;
+    if (inputSampleRate == Format.NO_VALUE && "alac".equals(codecName)) {
+      if (extraData != null && extraData.length >= 4) {
+        ParsableByteArray parsableExtraData = new ParsableByteArray(extraData);
+        parsableExtraData.setPosition(extraData.length - 4);
+        inputSampleRate = parsableExtraData.readUnsignedIntToInt();
+      }
+    }
+    final int resampleToRate = 48000;
+    int outputSampleRate = (inputSampleRate != Format.NO_VALUE && inputSampleRate > resampleToRate) 
+    ? resampleToRate 
+    : inputSampleRate;
     this.sampleRate = outputSampleRate;
     this.channelCount = format.channelCount;
     nativeContext =
@@ -138,16 +147,7 @@ import java.util.List;
       return null;
     }
     if (!hasOutputFormat) {
-      channelCount = ffmpegGetChannelCount(nativeContext);
-      sampleRate = ffmpegGetSampleRate(nativeContext);
-      if (sampleRate == 0 && "alac".equals(codecName)) {
-        Assertions.checkNotNull(extraData);
-        // ALAC decoder did not set the sample rate in earlier versions of FFmpeg. See
-        // https://trac.ffmpeg.org/ticket/6096.
-        ParsableByteArray parsableExtraData = new ParsableByteArray(extraData);
-        parsableExtraData.setPosition(extraData.length - 4);
-        sampleRate = parsableExtraData.readUnsignedIntToInt();
-      }
+      this.channelCount = ffmpegGetChannelCount(nativeContext);
       hasOutputFormat = true;
     }
     outputData.position(0);
