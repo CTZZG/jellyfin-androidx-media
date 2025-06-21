@@ -214,7 +214,7 @@ FFMPEG_EXTRACTOR_FUNC(jlong, nativeCreateContext, jobject javaExtractorInstance)
       ctx,                          // opaque context for callbacks (our FfmpegDemuxContext*)
       avio_read_packet_callback_jni,
       NULL,                         // write_packet callback (not needed for reading)
-      avio_seek_callback_jni);
+      NULL);
 
   if (!ctx->avio_ctx) {
     LOGE("Failed to allocate AVIOContext");
