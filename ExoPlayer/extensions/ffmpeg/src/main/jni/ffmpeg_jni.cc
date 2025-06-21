@@ -279,10 +279,17 @@ AVCodecContext *createContext(JNIEnv *env, AVCodec *codec, jbyteArray extraData,
     env->GetByteArrayRegion(extraData, 0, size, (jbyte *)context->extradata);
   }
   if (context->codec_id == AV_CODEC_ID_PCM_MULAW ||
-      context->codec_id == AV_CODEC_ID_PCM_ALAW) {
+      context->codec_id == AV_CODEC_ID_PCM_ALAW ||
+      context->codec_id == AV_CODEC_ID_DSD_LSBF ||
+      context->codec_id == AV_CODEC_ID_DSD_MSBF ||
+      context->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR ||
+      context->codec_id == AV_CODEC_ID_DSD_MSBF_PLANAR) {
     context->sample_rate = rawSampleRate;
     context->channels = rawChannelCount;
     context->channel_layout = av_get_default_channel_layout(rawChannelCount);
+    if (blockAlign > 0) {
+      context->block_align = blockAlign;
+    }
   }
 
   // Set block_align for WMA codecs - required by wmadec.c
