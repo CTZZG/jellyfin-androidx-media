@@ -393,14 +393,19 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
       logError("swr_convert", result);
       return AUDIO_DECODER_ERROR_INVALID_DATA;
     }
-    int available = swr_get_out_samples(resampleContext, 0);
-    if (available != 0) {
-      LOGE("Expected no samples remaining after resampling, but found %d.",
-           available);
-      return AUDIO_DECODER_ERROR_INVALID_DATA;
-    }
-    outputBuffer += bufferOutSize;
-    outSize += bufferOutSize;
+    // int available = swr_get_out_samples(resampleContext, 0);
+    // if (available != 0) {
+    //   LOGE("Expected no samples remaining after resampling, but found %d.",
+    //        available);
+    //   return AUDIO_DECODER_ERROR_INVALID_DATA;
+    // }
+    // outputBuffer += bufferOutSize;
+    // outSize += bufferOutSize;
+    
+    int outSampleSize = av_get_bytes_per_sample(context->request_sample_fmt);
+    int bytesWritten = result * channelCount * outSampleSize;
+    outputBuffer += bytesWritten;
+    outSize += bytesWritten;
   }
   return outSize;
 }
