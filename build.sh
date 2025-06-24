@@ -17,7 +17,7 @@ ls -la "${ANDROID_NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin"
 export EXOPLAYER_ROOT="${PWD}/ExoPlayer"
 export FFMPEG_EXT_PATH="${EXOPLAYER_ROOT}/extensions/ffmpeg/src/main"
 export FFMPEG_PATH="${PWD}/ffmpeg" # 确保 ffmpeg 子模块已检出且位于此路径
-export ENABLED_DECODERS=(flac alac pcm_mulaw pcm_alaw mp3 aac ac3 eac3 dca mlp truehd dsd_lsbf dsd_lsbf_planar dsd_msbf dsd_msbf_planar)
+export ENABLED_DECODERS=(vorbis opus flac alac pcm_mulaw pcm_alaw mp3 aac ac3 eac3 dca mlp truehd dsd_lsbf dsd_lsbf_planar dsd_msbf dsd_msbf_planar wmav2)
 
 # Create softlink to ffmpeg
 # 确保目标 JNI 目录存在
